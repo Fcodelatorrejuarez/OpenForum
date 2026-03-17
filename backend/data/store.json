@@ -1,0 +1,40 @@
+{
+  "users": [
+    {
+      "id": "a9a14a95-d9b2-4def-8abe-ef29abf762f2",
+      "username": "francis",
+      "passwordHash": "$2a$10$uc.l.qolIR2Q/lvlZwWvSOxw4lKwFlAyJRW7jozFF8/6HXw.TEiWe",
+      "reputation": 28,
+      "activityScore": 6,
+      "createdAt": "2026-03-17T21:49:30.732Z",
+      "lastActiveAt": "2026-03-17T22:07:02.982Z"
+    }
+  ],
+  "posts": [
+    {
+      "id": "60d859a9-430b-472f-ba68-14ca675af843",
+      "title": "The importance of the ai",
+      "content": "IDK",
+      "category": "discussion",
+      "authorId": "a9a14a95-d9b2-4def-8abe-ef29abf762f2",
+      "score": 1,
+      "comments": 2,
+      "commentItems": [
+        {
+          "id": "fbd3b51c-df1f-4635-b8ac-a7209d1a0f5d",
+          "authorId": "a9a14a95-d9b2-4def-8abe-ef29abf762f2",
+          "content": "knkljkjn",
+          "createdAt": "2026-03-17T22:06:59.311Z"
+        },
+        {
+          "id": "4bd82cf4-5fec-4bec-b531-e64cd2a071b5",
+          "authorId": "a9a14a95-d9b2-4def-8abe-ef29abf762f2",
+          "content": "njl",
+          "createdAt": "2026-03-17T22:07:02.980Z"
+        }
+      ],
+      "createdAt": "2026-03-17T21:50:01.559Z",
+      "updatedAt": "2026-03-17T22:07:02.982Z"
+    }
+  ]
+}

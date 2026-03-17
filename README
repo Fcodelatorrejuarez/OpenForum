@@ -1,0 +1,123 @@
+# ClubDeLaIA
+
+ClubDeLaIA is a full-stack forum app with:
+
+- React + Vite frontend
+- Node.js + Express backend
+- JWT-based authentication (register/login/me) using username + password
+- Post system (list/create/delete own post)
+- Reputation system based on user activity
+
+## Project Structure
+
+- src: React frontend
+- backend/server.js: API server
+- backend/data/store.json: Simple JSON data store for users and posts
+
+## Requirements
+
+- Node.js 18+
+- npm
+
+## Setup
+
+1. Install dependencies:
+
+	 npm install
+
+2. Run frontend + backend together:
+
+	 npm run dev
+
+3. Open the frontend:
+
+	 http://localhost:5173
+
+4. Backend runs on:
+
+	 http://localhost:4000
+
+## Backend Environment
+
+Optional environment variables:
+
+- PORT (default: 4000)
+- JWT_SECRET (default: dev-only-secret-change-me)
+
+On PowerShell, example:
+
+$env:JWT_SECRET="replace-with-a-strong-secret"
+npm run dev:server
+
+## API Endpoints
+
+Base URL: http://localhost:4000/api
+
+Authentication:
+
+- POST /auth/register
+	- body: { username, password }
+	- returns: { token, user }
+
+- POST /auth/login
+	- body: { username, password }
+	- returns: { token, user }
+
+- GET /auth/me
+	- header: Authorization: Bearer <token>
+	- returns: { user }
+
+- GET /users/leaderboard
+	- public
+	- returns: users sorted by reputation
+
+Posts:
+
+- GET /posts
+	- public
+	- returns: { posts }
+
+- POST /posts
+	- protected
+	- header: Authorization: Bearer <token>
+	- body: { title, content, category }
+	- category: discussion | resource | help
+	- returns: { post, user }
+
+- GET /posts/:id/comments
+	- public
+	- returns: comments for a post
+
+- POST /posts/:id/comments
+	- protected
+	- header: Authorization: Bearer <token>
+	- body: { content }
+	- returns: { comment, comments, user }
+
+- DELETE /posts/:id
+	- protected
+	- only post author can delete
+
+Health check:
+
+- GET /health
+
+## Frontend Notes
+
+- If backend is available, the app loads posts from the API.
+- If backend is unavailable, the app falls back to local seed threads for read-only browsing.
+- Creating posts requires authentication.
+- Header shows current logged user reputation.
+
+## Reputation Rules
+
+- New user starts with 10 reputation.
+- First login of each day grants +2 reputation and +1 activity score.
+- Creating a post grants +12 reputation and +3 activity score.
+
+## Future Improvements
+
+- Refresh tokens and secure cookie-based auth
+- Persistent database (PostgreSQL / MongoDB)
+- Post comments and voting persistence
+- Input validation library (zod or joi)

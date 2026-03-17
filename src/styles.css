@@ -106,22 +106,41 @@ button {
   justify-content: center;
 }
 
-.header-links a {
+.header-link-btn {
   color: var(--text-muted);
   font-size: 0.92rem;
   padding: 6px 10px;
   border-radius: 999px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
 }
 
-.header-links a:hover,
-.header-links a.active {
+.header-link-btn:hover,
+.header-link-btn.active {
   color: var(--text-main);
   background: var(--bg-muted);
+}
+
+.heart {
+  color: #d93053;
+  font-size: 0.95rem;
+  line-height: 1;
 }
 
 .header-actions {
   display: flex;
   align-items: center;
+  gap: 8px;
+}
+
+.username-chip {
+  font-size: 0.8rem;
+  color: var(--text-muted);
+  padding: 4px 8px;
+  border-radius: 999px;
+  background: var(--bg-muted);
+  border: 1px solid var(--border);
 }
 
 .btn-primary,
@@ -386,12 +405,86 @@ button {
   background: var(--bg-muted);
 }
 
+.thread-actions .liked-btn {
+  color: #d93053;
+}
+
 .thread-actions svg {
   width: 15px;
   height: 15px;
   stroke-width: 2px;
   stroke-linecap: round;
   stroke-linejoin: round;
+}
+
+.comments-panel {
+  margin-top: 10px;
+  border-top: 1px solid var(--border);
+  padding-top: 10px;
+}
+
+.comment-empty {
+  color: var(--text-muted);
+  font-size: 0.82rem;
+  margin-bottom: 8px;
+}
+
+.comments-list {
+  list-style: none;
+  display: grid;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.comment-item {
+  background: var(--bg-muted);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 8px;
+}
+
+.comment-meta {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  color: var(--text-muted);
+  font-size: 0.75rem;
+  margin-bottom: 4px;
+}
+
+.comment-content {
+  font-size: 0.85rem;
+  color: var(--text-main);
+  white-space: pre-wrap;
+}
+
+.comment-form {
+  display: grid;
+  gap: 6px;
+}
+
+.comment-form textarea {
+  width: 100%;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 8px 10px;
+  font-size: 0.86rem;
+  resize: vertical;
+  min-height: 62px;
+}
+
+.comment-form .btn-primary {
+  justify-self: end;
+}
+
+.comment-login-btn {
+  color: var(--link);
+  font-size: 0.82rem;
+  font-weight: 700;
+}
+
+.comment-login-btn:hover {
+  text-decoration: underline;
 }
 
 .empty-state {
@@ -550,6 +643,22 @@ button {
   display: flex;
   justify-content: flex-end;
   gap: 8px;
+}
+
+.auth-error {
+  color: #b10000;
+  font-size: 0.82rem;
+}
+
+.auth-switch {
+  margin-top: 4px;
+  font-size: 0.82rem;
+  color: var(--link);
+  justify-self: flex-start;
+}
+
+.auth-switch:hover {
+  text-decoration: underline;
 }
 
 @media (max-width: 960px) {
