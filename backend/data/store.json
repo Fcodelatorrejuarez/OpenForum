@@ -16,6 +16,7 @@
       "title": "The importance of the ai",
       "content": "IDK",
       "category": "discussion",
+      "subforumId": "clubdelaia-general",
       "authorId": "a9a14a95-d9b2-4def-8abe-ef29abf762f2",
       "score": 1,
       "comments": 2,
@@ -35,6 +36,16 @@
       ],
       "createdAt": "2026-03-17T21:50:01.559Z",
       "updatedAt": "2026-03-17T22:07:02.982Z"
+    }
+  ],
+  "subforums": [
+    {
+      "id": "clubdelaia-general",
+      "name": "ClubDeLaIA",
+      "slug": "clubdelaia",
+      "description": "Main community for practical AI and web development topics",
+      "createdAt": "2026-03-17T21:49:30.732Z",
+      "createdBy": "a9a14a95-d9b2-4def-8abe-ef29abf762f2"
     }
   ]
 }

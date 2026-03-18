@@ -2,6 +2,9 @@ import { useEffect, useMemo, useState } from "react";
 import { seedThreads } from "./data/seedThreads";
 
 const API_BASE = "http://localhost:4000/api";
+const FALLBACK_SUBFORUM_ID = "clubdelaia-general";
+const FALLBACK_SUBFORUM_NAME = "ClubDeLaIA";
+const FALLBACK_SUBFORUM_SLUG = "clubdelaia";
 
 const sortOptions = [
   { id: "trending", label: "Trending" },
@@ -28,6 +31,29 @@ const categoryLabel = {
   help: "Help"
 };
 
+async function apiFetch(path, options = {}) {
+  const response = await fetch(`${API_BASE}${path}`, {
+    credentials: "include",
+    ...options,
+    headers: {
+      ...(options.headers ?? {})
+    }
+  });
+
+  const text = await response.text();
+  let payload = null;
+
+  if (text) {
+    try {
+      payload = JSON.parse(text);
+    } catch {
+      payload = null;
+    }
+  }
+
+  return { response, payload };
+}
+
 function toHoursAgo(isoDate) {
   const timestamp = new Date(isoDate).getTime();
   if (Number.isNaN(timestamp)) {
@@ -39,6 +65,28 @@ function toHoursAgo(isoDate) {
   return Math.max(1, hours);
 }
 
+function getFallbackSubforums(postCount = 0) {
+  return [
+    {
+      id: FALLBACK_SUBFORUM_ID,
+      name: FALLBACK_SUBFORUM_NAME,
+      slug: FALLBACK_SUBFORUM_SLUG,
+      description: "General forum for practical AI and web development topics.",
+      postCount
+    }
+  ];
+}
+
+function mapApiSubforumToClient(subforum) {
+  return {
+    id: subforum.id,
+    name: subforum.name,
+    slug: subforum.slug,
+    description: subforum.description ?? "",
+    postCount: Number.isFinite(subforum.postCount) ? Number(subforum.postCount) : 0
+  };
+}
+
 function mapApiPostToThread(post) {
   return {
     id: post.id,
@@ -48,7 +96,19 @@ function mapApiPostToThread(post) {
     title: post.title,
     author: post.author,
     content: post.content,
-    comments: post.comments ?? 0
+    comments: post.comments ?? 0,
+    subforumId: post.subforumId ?? FALLBACK_SUBFORUM_ID,
+    subforumName: post.subforumName ?? FALLBACK_SUBFORUM_NAME,
+    subforumSlug: post.subforumSlug ?? FALLBACK_SUBFORUM_SLUG
+  };
+}
+
+function mapSeedThreadToThread(thread) {
+  return {
+    ...thread,
+    subforumId: thread.subforumId ?? FALLBACK_SUBFORUM_ID,
+    subforumName: thread.subforumName ?? FALLBACK_SUBFORUM_NAME,
+    subforumSlug: thread.subforumSlug ?? FALLBACK_SUBFORUM_SLUG
   };
 }
 
@@ -67,16 +127,30 @@ function sortThreads(items, selectedSort) {
   });
 }
 
-function filterThreads(items, query, category) {
+function filterThreads(items, query, category, subforumId) {
   const q = query.trim().toLowerCase();
   return items.filter((thread) => {
     if (category !== "all" && thread.category !== category) {
       return false;
     }
+    if (subforumId !== "all" && thread.subforumId !== subforumId) {
+      return false;
+    }
     if (!q) {
       return true;
     }
-    const text = [thread.title, thread.author, thread.content, thread.category].join(" ").toLowerCase();
+
+    const text = [
+      thread.title,
+      thread.author,
+      thread.content,
+      thread.category,
+      thread.subforumName,
+      thread.subforumSlug
+    ]
+      .join(" ")
+      .toLowerCase();
+
     return text.includes(q);
   });
 }
@@ -137,14 +211,22 @@ function ThreadCard({
   onCommentSubmit,
   commentSubmitting,
   currentUser,
-  onRequireAuth
+  onRequireAuth,
+  onSelectSubforum
 }) {
   return (
     <article className="thread-card">
       <VoteColumn threadId={thread.id} baseScore={thread.score} voteState={voteState} onVote={onVote} />
       <div className="thread-main">
         <div className="thread-meta">
-          <span className="community">r/ClubDeLaIA</span>
+          <button
+            type="button"
+            className="community-link"
+            onClick={() => onSelectSubforum(thread.subforumId)}
+            aria-label={`Open r/${thread.subforumSlug}`}
+          >
+            r/{thread.subforumSlug}
+          </button>
           <span>•</span>
           <span>Posted by u/{thread.author}</span>
           <span>•</span>
@@ -228,12 +310,26 @@ function ThreadCard({
   );
 }
 
-function NewThreadModal({ open, onClose, onCreate, creating }) {
+function NewThreadModal({ open, onClose, onCreate, creating, subforums, defaultSubforumId, error }) {
   const [form, setForm] = useState({
     title: "",
     content: "",
-    category: "discussion"
+    category: "discussion",
+    subforumId: defaultSubforumId || ""
   });
+
+  useEffect(() => {
+    if (!open) {
+      return;
+    }
+
+    setForm({
+      title: "",
+      content: "",
+      category: "discussion",
+      subforumId: defaultSubforumId || ""
+    });
+  }, [open, defaultSubforumId]);
 
   if (!open) {
     return null;
@@ -246,21 +342,23 @@ function NewThreadModal({ open, onClose, onCreate, creating }) {
 
   async function onSubmit(event) {
     event.preventDefault();
-    if (!form.title.trim() || !form.content.trim()) {
+    if (!form.title.trim() || !form.content.trim() || !form.subforumId) {
       return;
     }
 
     const success = await onCreate({
       title: form.title,
       content: form.content,
-      category: form.category
+      category: form.category,
+      subforumId: form.subforumId
     });
 
     if (success) {
-      setForm({ title: "", content: "", category: "discussion" });
       onClose();
     }
   }
+
+  const disabled = creating || subforums.length === 0;
 
   return (
     <div className="modal-overlay" role="dialog" aria-modal="true" aria-label="Create new thread">
@@ -270,6 +368,20 @@ function NewThreadModal({ open, onClose, onCreate, creating }) {
         <label>
           <span>Title</span>
           <input name="title" value={form.title} onChange={onChange} placeholder="Write a descriptive post title" />
+        </label>
+
+        <label>
+          <span>Subforum</span>
+          <select name="subforumId" value={form.subforumId} onChange={onChange} disabled={subforums.length === 0}>
+            <option value="" disabled>
+              {subforums.length === 0 ? "No subforums available" : "Select a subforum"}
+            </option>
+            {subforums.map((subforum) => (
+              <option key={subforum.id} value={subforum.id}>
+                {subforum.name} (r/{subforum.slug})
+              </option>
+            ))}
+          </select>
         </label>
 
         <label>
@@ -292,11 +404,13 @@ function NewThreadModal({ open, onClose, onCreate, creating }) {
           ></textarea>
         </label>
 
+        {error ? <p className="auth-error">{error}</p> : null}
+
         <div className="modal-actions">
           <button type="button" className="btn-secondary" onClick={onClose} disabled={creating}>
             Cancel
           </button>
-          <button type="submit" className="btn-primary" disabled={creating}>
+          <button type="submit" className="btn-primary" disabled={disabled}>
             {creating ? "Posting..." : "Post"}
           </button>
         </div>
@@ -352,7 +466,7 @@ function AuthModal({ open, mode, onClose, onSwitchMode, onSubmit, loading, error
             type="password"
             value={form.password}
             onChange={onChange}
-            placeholder={mode === "register" ? "At least 6 characters" : "Your password"}
+            placeholder={mode === "register" ? "At least 8 chars, letter and number" : "Your password"}
             required
           />
         </label>
@@ -376,10 +490,86 @@ function AuthModal({ open, mode, onClose, onSwitchMode, onSubmit, loading, error
   );
 }
 
+function NewSubforumModal({ open, onClose, onCreate, creating, error }) {
+  const [form, setForm] = useState({
+    name: "",
+    description: ""
+  });
+
+  useEffect(() => {
+    if (!open) {
+      return;
+    }
+    setForm({ name: "", description: "" });
+  }, [open]);
+
+  if (!open) {
+    return null;
+  }
+
+  function onChange(event) {
+    const { name, value } = event.target;
+    setForm((current) => ({ ...current, [name]: value }));
+  }
+
+  async function onSubmit(event) {
+    event.preventDefault();
+    if (!form.name.trim()) {
+      return;
+    }
+
+    const success = await onCreate({
+      name: form.name,
+      description: form.description
+    });
+
+    if (success) {
+      onClose();
+    }
+  }
+
+  return (
+    <div className="modal-overlay" role="dialog" aria-modal="true" aria-label="Create new subforum">
+      <form className="modal" onSubmit={onSubmit}>
+        <h2>Create Subforum</h2>
+
+        <label>
+          <span>Name</span>
+          <input name="name" value={form.name} onChange={onChange} placeholder="Frontend, DevOps, UX Writing..." />
+        </label>
+
+        <label>
+          <span>Description</span>
+          <textarea
+            name="description"
+            value={form.description}
+            onChange={onChange}
+            rows={3}
+            placeholder="What topics belong to this subforum?"
+          ></textarea>
+        </label>
+
+        {error ? <p className="auth-error">{error}</p> : null}
+
+        <div className="modal-actions">
+          <button type="button" className="btn-secondary" onClick={onClose} disabled={creating}>
+            Cancel
+          </button>
+          <button type="submit" className="btn-primary" disabled={creating}>
+            {creating ? "Creating..." : "Create Subforum"}
+          </button>
+        </div>
+      </form>
+    </div>
+  );
+}
+
 export default function App() {
   const [threads, setThreads] = useState([]);
+  const [subforums, setSubforums] = useState([]);
   const [selectedSort, setSelectedSort] = useState("trending");
   const [selectedCategory, setSelectedCategory] = useState("all");
+  const [selectedSubforumId, setSelectedSubforumId] = useState("all");
   const [query, setQuery] = useState("");
   const [votesByThread, setVotesByThread] = useState({});
 
@@ -404,82 +594,111 @@ export default function App() {
   const [commentSubmittingByPost, setCommentSubmittingByPost] = useState({});
 
   const [isPostModalOpen, setIsPostModalOpen] = useState(false);
+  const [isSubforumModalOpen, setIsSubforumModalOpen] = useState(false);
   const [isAuthModalOpen, setIsAuthModalOpen] = useState(false);
   const [authMode, setAuthMode] = useState("login");
   const [authError, setAuthError] = useState("");
   const [authLoading, setAuthLoading] = useState(false);
   const [creatingPost, setCreatingPost] = useState(false);
+  const [createPostError, setCreatePostError] = useState("");
+  const [creatingSubforum, setCreatingSubforum] = useState(false);
+  const [subforumError, setSubforumError] = useState("");
   const [loadingPosts, setLoadingPosts] = useState(true);
 
-  const [token, setToken] = useState(() => localStorage.getItem("clubdelaia_token") || "");
   const [currentUser, setCurrentUser] = useState(null);
+
+  const selectedSubforum = useMemo(() => {
+    return subforums.find((subforum) => subforum.id === selectedSubforumId) ?? null;
+  }, [subforums, selectedSubforumId]);
+
+  const defaultSubforumId = useMemo(() => {
+    if (selectedSubforumId !== "all" && subforums.some((subforum) => subforum.id === selectedSubforumId)) {
+      return selectedSubforumId;
+    }
+    return subforums[0]?.id ?? "";
+  }, [selectedSubforumId, subforums]);
+
+  const postCountBySubforum = useMemo(() => {
+    return threads.reduce((current, thread) => {
+      const previous = current[thread.subforumId] ?? 0;
+      return { ...current, [thread.subforumId]: previous + 1 };
+    }, {});
+  }, [threads]);
 
   const visibleThreads = useMemo(() => {
     const source = activeTab === "liked" ? threads.filter((thread) => likedPostIds.includes(thread.id)) : threads;
-    const filtered = filterThreads(source, query, selectedCategory);
+    const filtered = filterThreads(source, query, selectedCategory, selectedSubforumId);
     return sortThreads(filtered, selectedSort);
-  }, [activeTab, threads, likedPostIds, query, selectedCategory, selectedSort]);
+  }, [activeTab, threads, likedPostIds, query, selectedCategory, selectedSubforumId, selectedSort]);
 
   useEffect(() => {
     localStorage.setItem("clubdelaia_liked_posts", JSON.stringify(likedPostIds));
   }, [likedPostIds]);
 
   useEffect(() => {
-    async function loadPosts() {
+    async function loadInitialData() {
       setLoadingPosts(true);
       try {
-        const response = await fetch(`${API_BASE}/posts`);
-        const payload = await response.json();
-        if (!response.ok) {
-          throw new Error(payload.error || "Could not load posts");
+        const [{ response: postsResponse, payload: postsPayload }, { response: subforumsResponse, payload: subforumsPayload }] =
+          await Promise.all([apiFetch("/posts"), apiFetch("/subforums")]);
+
+        if (!postsResponse.ok) {
+          throw new Error(postsPayload?.error || "Could not load posts");
+        }
+        if (!subforumsResponse.ok) {
+          throw new Error(subforumsPayload?.error || "Could not load subforums");
         }
 
-        const mapped = payload.posts.map(mapApiPostToThread);
-        setThreads(mapped);
+        const mappedPosts = Array.isArray(postsPayload?.posts) ? postsPayload.posts.map(mapApiPostToThread) : [];
+        const mappedSubforums = Array.isArray(subforumsPayload?.subforums)
+          ? subforumsPayload.subforums.map(mapApiSubforumToClient)
+          : [];
+
+        setThreads(mappedPosts);
+        setSubforums(
+          mappedSubforums.length > 0
+            ? mappedSubforums.sort((a, b) => a.slug.localeCompare(b.slug))
+            : getFallbackSubforums(mappedPosts.length)
+        );
       } catch {
-        setThreads(seedThreads);
+        const fallbackThreads = seedThreads.map(mapSeedThreadToThread);
+        setThreads(fallbackThreads);
+        setSubforums(getFallbackSubforums(fallbackThreads.length));
       } finally {
         setLoadingPosts(false);
       }
     }
 
-    loadPosts();
+    loadInitialData();
   }, []);
 
   useEffect(() => {
-    if (!token) {
-      setCurrentUser(null);
-      return;
-    }
-
     async function loadSession() {
       try {
-        const response = await fetch(`${API_BASE}/auth/me`, {
-          headers: {
-            Authorization: `Bearer ${token}`
-          }
-        });
-
-        const payload = await response.json();
+        const { response, payload } = await apiFetch("/auth/me");
         if (!response.ok) {
-          throw new Error(payload.error || "Session expired");
+          setCurrentUser(null);
+          return;
         }
 
-        setCurrentUser(payload.user);
+        setCurrentUser(payload?.user ?? null);
       } catch {
-        localStorage.removeItem("clubdelaia_token");
-        setToken("");
         setCurrentUser(null);
       }
     }
 
     loadSession();
-  }, [token]);
+  }, []);
 
-  function saveToken(nextToken) {
-    localStorage.setItem("clubdelaia_token", nextToken);
-    setToken(nextToken);
-  }
+  useEffect(() => {
+    if (selectedSubforumId === "all") {
+      return;
+    }
+
+    if (!subforums.some((subforum) => subforum.id === selectedSubforumId)) {
+      setSelectedSubforumId("all");
+    }
+  }, [selectedSubforumId, subforums]);
 
   function openAuthModal(mode, errorMessage = "") {
     setAuthMode(mode);
@@ -508,17 +727,21 @@ export default function App() {
     });
   }
 
+  function onSelectSubforum(subforumId) {
+    setSelectedSubforumId(subforumId);
+    setActiveTab("home");
+  }
+
   async function loadComments(postId) {
     setCommentsLoadingByPost((current) => ({ ...current, [postId]: true }));
     try {
-      const response = await fetch(`${API_BASE}/posts/${postId}/comments`);
-      const payload = await response.json();
+      const { response, payload } = await apiFetch(`/posts/${postId}/comments`);
 
       if (!response.ok) {
-        throw new Error(payload.error || "Could not load comments");
+        throw new Error(payload?.error || "Could not load comments");
       }
 
-      setCommentsByPost((current) => ({ ...current, [postId]: payload.comments }));
+      setCommentsByPost((current) => ({ ...current, [postId]: payload?.comments ?? [] }));
     } catch {
       setCommentsByPost((current) => ({ ...current, [postId]: current[postId] ?? [] }));
     } finally {
@@ -546,7 +769,7 @@ export default function App() {
       return;
     }
 
-    if (!token) {
+    if (!currentUser) {
       requireAuth("Sign in first to comment.");
       return;
     }
@@ -554,38 +777,42 @@ export default function App() {
     setCommentSubmittingByPost((current) => ({ ...current, [postId]: true }));
 
     try {
-      const response = await fetch(`${API_BASE}/posts/${postId}/comments`, {
+      const { response, payload } = await apiFetch(`/posts/${postId}/comments`, {
         method: "POST",
         headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${token}`
+          "Content-Type": "application/json"
         },
         body: JSON.stringify({ content: draft })
       });
 
-      const payload = await response.json();
       if (!response.ok) {
-        throw new Error(payload.error || "Could not create comment");
+        if (response.status === 401) {
+          setCurrentUser(null);
+          requireAuth("Session expired. Sign in again.");
+          return;
+        }
+        throw new Error(payload?.error || "Could not create comment");
       }
 
       setCommentsByPost((current) => ({
         ...current,
-        [postId]: [...(current[postId] ?? []), payload.comment]
+        [postId]: [...(current[postId] ?? []), payload?.comment]
       }));
 
       setThreads((current) =>
         current.map((thread) =>
-          thread.id === postId ? { ...thread, comments: payload.comments ?? thread.comments + 1 } : thread
+          thread.id === postId ? { ...thread, comments: payload?.comments ?? thread.comments + 1 } : thread
         )
       );
 
       setCommentDraftByPost((current) => ({ ...current, [postId]: "" }));
 
-      if (payload.user) {
+      if (payload?.user) {
         setCurrentUser(payload.user);
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : "Could not create comment";
+      setCreatePostError("");
       requireAuth(message);
     } finally {
       setCommentSubmittingByPost((current) => ({ ...current, [postId]: false }));
@@ -597,47 +824,113 @@ export default function App() {
       requireAuth("Sign in first to create posts.");
       return;
     }
+
+    if (subforums.length === 0) {
+      return;
+    }
+
+    setCreatePostError("");
     setIsPostModalOpen(true);
   }
 
+  function openCreateSubforum() {
+    if (!currentUser) {
+      requireAuth("Sign in first to create subforums.");
+      return;
+    }
+
+    setSubforumError("");
+    setIsSubforumModalOpen(true);
+  }
+
   async function onCreateThread(postInput) {
-    if (!token) {
+    if (!currentUser) {
       requireAuth("Sign in first to create posts.");
       return false;
     }
 
     setCreatingPost(true);
+    setCreatePostError("");
 
     try {
-      const response = await fetch(`${API_BASE}/posts`, {
+      const { response, payload } = await apiFetch("/posts", {
         method: "POST",
         headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${token}`
+          "Content-Type": "application/json"
         },
         body: JSON.stringify(postInput)
       });
 
-      const payload = await response.json();
       if (!response.ok) {
-        throw new Error(payload.error || "Could not create post");
+        if (response.status === 401) {
+          setCurrentUser(null);
+          requireAuth("Session expired. Sign in again.");
+          return false;
+        }
+        throw new Error(payload?.error || "Could not create post");
       }
 
-      setThreads((current) => [mapApiPostToThread(payload.post), ...current]);
-      if (payload.user) {
+      const mappedPost = mapApiPostToThread(payload?.post);
+      setThreads((current) => [mappedPost, ...current]);
+      if (payload?.user) {
         setCurrentUser(payload.user);
       }
+
       setSelectedSort("newest");
       setSelectedCategory("all");
+      setSelectedSubforumId(mappedPost.subforumId);
       setQuery("");
       setActiveTab("home");
       return true;
     } catch (error) {
       const message = error instanceof Error ? error.message : "Could not create post";
-      requireAuth(message);
+      setCreatePostError(message);
       return false;
     } finally {
       setCreatingPost(false);
+    }
+  }
+
+  async function onCreateSubforum(input) {
+    if (!currentUser) {
+      requireAuth("Sign in first to create subforums.");
+      return false;
+    }
+
+    setCreatingSubforum(true);
+    setSubforumError("");
+
+    try {
+      const { response, payload } = await apiFetch("/subforums", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify(input)
+      });
+
+      if (!response.ok) {
+        if (response.status === 401) {
+          setCurrentUser(null);
+          requireAuth("Session expired. Sign in again.");
+          return false;
+        }
+        throw new Error(payload?.error || "Could not create subforum");
+      }
+
+      const mappedSubforum = mapApiSubforumToClient(payload?.subforum);
+      setSubforums((current) =>
+        [...current, mappedSubforum].sort((a, b) => a.slug.localeCompare(b.slug))
+      );
+      setSelectedSubforumId(mappedSubforum.id);
+      setActiveTab("home");
+      return true;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Could not create subforum";
+      setSubforumError(message);
+      return false;
+    } finally {
+      setCreatingSubforum(false);
     }
   }
 
@@ -652,7 +945,7 @@ export default function App() {
         password: values.password
       };
 
-      const response = await fetch(`${API_BASE}${endpoint}`, {
+      const { response, payload } = await apiFetch(endpoint, {
         method: "POST",
         headers: {
           "Content-Type": "application/json"
@@ -660,13 +953,11 @@ export default function App() {
         body: JSON.stringify(body)
       });
 
-      const payload = await response.json();
       if (!response.ok) {
-        throw new Error(payload.error || "Authentication failed");
+        throw new Error(payload?.error || "Authentication failed");
       }
 
-      saveToken(payload.token);
-      setCurrentUser(payload.user);
+      setCurrentUser(payload?.user ?? null);
       setIsAuthModalOpen(false);
       setAuthError("");
     } catch (error) {
@@ -676,11 +967,31 @@ export default function App() {
     }
   }
 
-  function logout() {
-    localStorage.removeItem("clubdelaia_token");
-    setToken("");
+  async function logout() {
+    try {
+      await apiFetch("/auth/logout", {
+        method: "POST"
+      });
+    } catch {
+      // The client state is still cleared locally.
+    }
+
     setCurrentUser(null);
   }
+
+  const feedTitle =
+    activeTab === "liked"
+      ? "Your liked posts"
+      : selectedSubforum
+        ? `r/${selectedSubforum.slug}`
+        : "All subforums";
+
+  const feedDescription =
+    activeTab === "liked"
+      ? "Posts you marked with heart."
+      : selectedSubforum
+        ? selectedSubforum.description || `Threads from ${selectedSubforum.name}.`
+        : "Simple, practical threads for AI and front-end development.";
 
   return (
     <div className="app">
@@ -733,12 +1044,8 @@ export default function App() {
       <div className="layout">
         <main className="main-column">
           <section className="feed-head">
-            <h1>{activeTab === "liked" ? "Your liked posts" : "r/ClubDeLaIA"}</h1>
-            <p>
-              {activeTab === "liked"
-                ? "Posts you marked with heart."
-                : "Simple, practical threads for AI and front-end development."}
-            </p>
+            <h1>{feedTitle}</h1>
+            <p>{feedDescription}</p>
           </section>
 
           <section className="toolbar" aria-label="Feed controls">
@@ -765,6 +1072,24 @@ export default function App() {
                 </button>
               ))}
             </div>
+
+            <label className="subforum-filter">
+              <span>Subforum</span>
+              <select
+                value={selectedSubforumId}
+                onChange={(event) => {
+                  setSelectedSubforumId(event.target.value);
+                  setActiveTab("home");
+                }}
+              >
+                <option value="all">All</option>
+                {subforums.map((subforum) => (
+                  <option key={subforum.id} value={subforum.id}>
+                    r/{subforum.slug}
+                  </option>
+                ))}
+              </select>
+            </label>
 
             <label className="search-wrap" aria-label="Search threads">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor">
@@ -803,6 +1128,7 @@ export default function App() {
                     commentSubmitting={Boolean(commentSubmittingByPost[thread.id])}
                     currentUser={currentUser}
                     onRequireAuth={() => requireAuth("Sign in first to comment.")}
+                    onSelectSubforum={onSelectSubforum}
                   />
                 ))
               : null}
@@ -824,17 +1150,50 @@ export default function App() {
 
             <div className="stats">
               <div>
-                <strong>1.2k</strong>
-                <span>Members</span>
+                <strong>{threads.length}</strong>
+                <span>Posts</span>
               </div>
               <div>
-                <strong>42</strong>
-                <span>Online</span>
+                <strong>{subforums.length}</strong>
+                <span>Subforums</span>
               </div>
             </div>
 
             <button className="btn-primary" type="button" onClick={openCreatePost}>
               Create Post
+            </button>
+          </section>
+
+          <section className="panel">
+            <h2>Subforums</h2>
+            <div className="subforum-list">
+              <button
+                type="button"
+                className={`subforum-btn ${selectedSubforumId === "all" ? "active" : ""}`}
+                onClick={() => {
+                  setSelectedSubforumId("all");
+                  setActiveTab("home");
+                }}
+              >
+                <span>All subforums</span>
+                <span>{threads.length}</span>
+              </button>
+
+              {subforums.map((subforum) => (
+                <button
+                  key={subforum.id}
+                  type="button"
+                  className={`subforum-btn ${selectedSubforumId === subforum.id ? "active" : ""}`}
+                  onClick={() => onSelectSubforum(subforum.id)}
+                >
+                  <span>r/{subforum.slug}</span>
+                  <span>{postCountBySubforum[subforum.id] ?? subforum.postCount ?? 0}</span>
+                </button>
+              ))}
+            </div>
+
+            <button className="btn-secondary full-width-btn" type="button" onClick={openCreateSubforum}>
+              Create Subforum
             </button>
           </section>
 
@@ -869,9 +1228,26 @@ export default function App() {
 
       <NewThreadModal
         open={isPostModalOpen}
-        onClose={() => setIsPostModalOpen(false)}
+        onClose={() => {
+          setIsPostModalOpen(false);
+          setCreatePostError("");
+        }}
         onCreate={onCreateThread}
         creating={creatingPost}
+        subforums={subforums}
+        defaultSubforumId={defaultSubforumId}
+        error={createPostError}
+      />
+
+      <NewSubforumModal
+        open={isSubforumModalOpen}
+        onClose={() => {
+          setIsSubforumModalOpen(false);
+          setSubforumError("");
+        }}
+        onCreate={onCreateSubforum}
+        creating={creatingSubforum}
+        error={subforumError}
       />
 
       <AuthModal

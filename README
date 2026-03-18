@@ -4,15 +4,17 @@ ClubDeLaIA is a full-stack forum app with:
 
 - React + Vite frontend
 - Node.js + Express backend
-- JWT-based authentication (register/login/me) using username + password
+- JWT-based authentication with HttpOnly cookie sessions
+- Subforums (reddit-like niches) with creation and browsing
 - Post system (list/create/delete own post)
 - Reputation system based on user activity
+- Backend validation and basic rate limiting for auth/write actions
 
 ## Project Structure
 
 - src: React frontend
 - backend/server.js: API server
-- backend/data/store.json: Simple JSON data store for users and posts
+- backend/data/store.json: Simple JSON data store for users, subforums and posts
 
 ## Requirements
 
@@ -42,7 +44,11 @@ ClubDeLaIA is a full-stack forum app with:
 Optional environment variables:
 
 - PORT (default: 4000)
-- JWT_SECRET (default: dev-only-secret-change-me)
+- FRONTEND_ORIGIN (default: http://localhost:5173)
+- JWT_SECRET
+  - required in production
+  - in development, if omitted, the server creates an ephemeral secret on startup
+  - must be at least 32 characters long if provided
 
 On PowerShell, example:
 
@@ -57,19 +63,36 @@ Authentication:
 
 - POST /auth/register
 	- body: { username, password }
-	- returns: { token, user }
+	- sets an HttpOnly session cookie
+	- returns: { user }
 
 - POST /auth/login
 	- body: { username, password }
-	- returns: { token, user }
+	- sets an HttpOnly session cookie
+	- returns: { user }
+
+- POST /auth/logout
+	- clears the session cookie
 
 - GET /auth/me
-	- header: Authorization: Bearer <token>
+	- uses the session cookie
 	- returns: { user }
 
 - GET /users/leaderboard
 	- public
 	- returns: users sorted by reputation
+
+Subforums:
+
+- GET /subforums
+	- public
+	- returns: list of subforums and post counts
+
+- POST /subforums
+	- protected
+	- uses the session cookie
+	- body: { name, description? }
+	- returns: { subforum }
 
 Posts:
 
@@ -79,8 +102,8 @@ Posts:
 
 - POST /posts
 	- protected
-	- header: Authorization: Bearer <token>
-	- body: { title, content, category }
+	- uses the session cookie
+	- body: { title, content, category, subforumId }
 	- category: discussion | resource | help
 	- returns: { post, user }
 
@@ -90,7 +113,7 @@ Posts:
 
 - POST /posts/:id/comments
 	- protected
-	- header: Authorization: Bearer <token>
+	- uses the session cookie
 	- body: { content }
 	- returns: { comment, comments, user }
 
@@ -107,7 +130,15 @@ Health check:
 - If backend is available, the app loads posts from the API.
 - If backend is unavailable, the app falls back to local seed threads for read-only browsing.
 - Creating posts requires authentication.
+- Auth state is restored from the HttpOnly session cookie instead of localStorage.
 - Header shows current logged user reputation.
+
+## Security Notes
+
+- Auth sessions are stored in an HttpOnly cookie with `SameSite=Lax`.
+- Auth endpoints are rate limited.
+- Write actions (create post, create comment, create subforum, delete post) are rate limited.
+- Backend payloads are validated for type, length and allowed values before write operations.
 
 ## Reputation Rules
 
@@ -117,7 +148,7 @@ Health check:
 
 ## Future Improvements
 
-- Refresh tokens and secure cookie-based auth
+- Refresh tokens and CSRF protection for stricter session hardening
 - Persistent database (PostgreSQL / MongoDB)
 - Post comments and voting persistence
 - Input validation library (zod or joi)

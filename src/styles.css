@@ -239,6 +239,34 @@ button {
   gap: 6px;
 }
 
+.subforum-filter {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg-muted);
+  padding: 6px 8px;
+}
+
+.subforum-filter span {
+  color: var(--text-muted);
+  font-size: 0.8rem;
+  font-weight: 700;
+}
+
+.subforum-filter select {
+  border: 0;
+  background: transparent;
+  color: var(--text-main);
+  font-size: 0.85rem;
+  min-width: 120px;
+}
+
+.subforum-filter select:focus {
+  outline: none;
+}
+
 .search-wrap {
   margin-left: auto;
   min-width: 220px;
@@ -347,6 +375,16 @@ button {
 .community {
   color: var(--text-main);
   font-weight: 700;
+}
+
+.community-link {
+  color: var(--text-main);
+  font-weight: 700;
+  font-size: inherit;
+}
+
+.community-link:hover {
+  text-decoration: underline;
 }
 
 .tag {
@@ -521,6 +559,11 @@ button {
   margin-bottom: 10px;
 }
 
+.full-width-btn {
+  width: 100%;
+  margin-top: 10px;
+}
+
 .stats {
   display: grid;
   grid-template-columns: 1fr 1fr;
@@ -542,6 +585,36 @@ button {
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
+}
+
+.subforum-list {
+  display: grid;
+  gap: 6px;
+}
+
+.subforum-btn {
+  width: 100%;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg-muted);
+  color: var(--text-main);
+  font-size: 0.82rem;
+  font-weight: 600;
+  padding: 8px 10px;
+}
+
+.subforum-btn:hover {
+  border-color: #a5a7aa;
+  background: #eef0f2;
+}
+
+.subforum-btn.active {
+  border-color: var(--link);
+  background: #eaf3ff;
+  color: var(--link);
 }
 
 .pill {
@@ -695,6 +768,17 @@ button {
     margin-left: 0;
     max-width: none;
     width: 100%;
+  }
+
+  .subforum-filter {
+    width: 100%;
+    justify-content: space-between;
+  }
+
+  .subforum-filter select {
+    min-width: 0;
+    flex: 1;
+    text-align: right;
   }
 
   .modal-actions {
