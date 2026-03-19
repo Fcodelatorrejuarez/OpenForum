@@ -3,6 +3,7 @@ import express from "express";
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
 import fs from "node:fs/promises";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { randomBytes, randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
@@ -10,6 +11,7 @@ import { fileURLToPath } from "node:url";
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const storePath = path.join(__dirname, "data", "store.json");
+const devJwtSecretPath = path.join(__dirname, "data", "dev-jwt-secret.txt");
 
 const app = express();
 const PORT = Number(process.env.PORT ?? 4000);
@@ -38,9 +40,18 @@ function resolveJwtSecret() {
     throw new Error("JWT_SECRET is required in production");
   }
 
-  const ephemeralSecret = randomBytes(48).toString("hex");
-  console.warn("JWT_SECRET not set. Using an ephemeral development secret.");
-  return ephemeralSecret;
+  if (existsSync(devJwtSecretPath)) {
+    const persisted = readFileSync(devJwtSecretPath, "utf8").trim();
+    if (persisted.length >= 32) {
+      return persisted;
+    }
+  }
+
+  const generatedSecret = randomBytes(48).toString("hex");
+  mkdirSync(path.dirname(devJwtSecretPath), { recursive: true });
+  writeFileSync(devJwtSecretPath, `${generatedSecret}\n`, { encoding: "utf8" });
+  console.warn("JWT_SECRET not set. Generated persistent development secret at backend/data/dev-jwt-secret.txt.");
+  return generatedSecret;
 }
 
 const JWT_SECRET = resolveJwtSecret();
@@ -219,6 +230,19 @@ function validateCommentContent(value) {
   return content;
 }
 
+function validateOptionalCommentParentId(value) {
+  if (value == null || value === "") {
+    return "";
+  }
+
+  const parentCommentId = readTrimmedString(value, "parentCommentId");
+  if (parentCommentId.length > 120) {
+    throw new HttpError(400, "parentCommentId is invalid");
+  }
+
+  return parentCommentId;
+}
+
 function parseCookies(headerValue) {
   const header = typeof headerValue === "string" ? headerValue : "";
   return header.split(";").reduce((cookies, part) => {
@@ -299,12 +323,60 @@ function userPublicFields(user) {
 
 function normalizeComment(comment) {
   const createdAt = isValidIsoDate(comment.createdAt) ? comment.createdAt : new Date().toISOString();
+  const sourceReplies = Array.isArray(comment.replies) ? comment.replies : [];
   return {
     id: typeof comment.id === "string" ? comment.id : randomUUID(),
     authorId: typeof comment.authorId === "string" ? comment.authorId : "",
     content: typeof comment.content === "string" ? comment.content.trim() : "",
-    createdAt
+    createdAt,
+    replies: sourceReplies.map((reply) => normalizeComment(reply))
   };
+}
+
+function countCommentsDeep(commentItems) {
+  return commentItems.reduce((total, comment) => {
+    return total + 1 + countCommentsDeep(Array.isArray(comment.replies) ? comment.replies : []);
+  }, 0);
+}
+
+function sortCommentsByDate(commentItems) {
+  return [...commentItems]
+    .sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime())
+    .map((comment) => ({
+      ...comment,
+      replies: sortCommentsByDate(Array.isArray(comment.replies) ? comment.replies : [])
+    }));
+}
+
+function insertReplyIntoTree(commentItems, parentCommentId, newComment) {
+  let inserted = false;
+
+  const comments = commentItems.map((comment) => {
+    if (comment.id === parentCommentId) {
+      inserted = true;
+      return {
+        ...comment,
+        replies: [...(Array.isArray(comment.replies) ? comment.replies : []), newComment]
+      };
+    }
+
+    if (!Array.isArray(comment.replies) || comment.replies.length === 0) {
+      return comment;
+    }
+
+    const nested = insertReplyIntoTree(comment.replies, parentCommentId, newComment);
+    if (!nested.inserted) {
+      return comment;
+    }
+
+    inserted = true;
+    return {
+      ...comment,
+      replies: nested.comments
+    };
+  });
+
+  return { comments, inserted };
 }
 
 function mapCommentForClient(comment, users) {
@@ -315,7 +387,8 @@ function mapCommentForClient(comment, users) {
     author: author ? author.username : "Unknown",
     authorReputation: author ? author.reputation : 0,
     content: comment.content,
-    createdAt: comment.createdAt
+    createdAt: comment.createdAt,
+    replies: Array.isArray(comment.replies) ? comment.replies.map((reply) => mapCommentForClient(reply, users)) : []
   };
 }
 
@@ -402,8 +475,9 @@ function buildNormalizedStore(input) {
     const updatedAt = isValidIsoDate(post.updatedAt) ? post.updatedAt : createdAt;
     const sourceCommentItems = Array.isArray(post.commentItems) ? post.commentItems : [];
     const commentItems = sourceCommentItems.map((comment) => normalizeComment(comment));
-    const legacyCount = Number.isFinite(post.comments) ? Number(post.comments) : commentItems.length;
-    const comments = Math.max(legacyCount, commentItems.length);
+    const normalizedCount = countCommentsDeep(commentItems);
+    const legacyCount = Number.isFinite(post.comments) ? Number(post.comments) : normalizedCount;
+    const comments = Math.max(legacyCount, normalizedCount);
     const subforumId =
       typeof post.subforumId === "string" && validSubforumIds.has(post.subforumId)
         ? post.subforumId
@@ -611,7 +685,7 @@ function mapPostForClient(post, users, subforums) {
       description: ""
     };
   const commentItems = Array.isArray(post.commentItems) ? post.commentItems : [];
-  const commentCount = Math.max(Number(post.comments) || 0, commentItems.length);
+  const commentCount = Math.max(Number(post.comments) || 0, countCommentsDeep(commentItems));
 
   return {
     id: post.id,
@@ -867,10 +941,7 @@ app.get(
     }
 
     const commentItems = Array.isArray(post.commentItems) ? post.commentItems : [];
-    const comments = commentItems
-      .slice()
-      .sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime())
-      .map((comment) => mapCommentForClient(comment, store.users));
+    const comments = sortCommentsByDate(commentItems).map((comment) => mapCommentForClient(comment, store.users));
 
     return res.json({ comments });
   })
@@ -884,6 +955,7 @@ app.post(
     const postId = readTrimmedString(req.params.id, "id");
     const body = requirePlainObject(req.body);
     const content = validateCommentContent(body.content);
+    const parentCommentId = validateOptionalCommentParentId(body.parentCommentId);
 
     const store = await readStore();
     const post = store.posts.find((candidate) => candidate.id === postId);
@@ -904,11 +976,21 @@ app.post(
       id: randomUUID(),
       authorId: user.id,
       content,
-      createdAt: new Date().toISOString()
+      createdAt: new Date().toISOString(),
+      replies: []
     };
 
-    post.commentItems.push(comment);
-    post.comments = Math.max(Number(post.comments) || 0, post.commentItems.length);
+    if (parentCommentId) {
+      const result = insertReplyIntoTree(post.commentItems, parentCommentId, comment);
+      if (!result.inserted) {
+        throw new HttpError(404, "Parent comment not found");
+      }
+      post.commentItems = result.comments;
+    } else {
+      post.commentItems.push(comment);
+    }
+
+    post.comments = countCommentsDeep(post.commentItems);
     post.updatedAt = new Date().toISOString();
 
     applyCommentContribution(user);

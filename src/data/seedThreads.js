@@ -4,10 +4,10 @@ export const seedThreads = [
     category: "discussion",
     score: 342,
     ageHours: 2,
-    title: "Thoughts on the shifting aesthetics of digital sanctuaries?",
+    title: "Que opinan del cambio estetico en comunidades digitales?",
     author: "Elara_V",
     content:
-      "I have noticed a move away from brutalist minimalism toward softer, textured interfaces. It feels like we are building rooms for reflection instead of dashboards. Does this change the quality of discussion?",
+      "He notado un cambio del minimalismo brutalista hacia interfaces mas suaves y texturizadas. Siento que ahora construimos espacios para reflexionar, no solo tableros de control. Esto mejora la calidad de la conversacion?",
     comments: 48
   },
   {
@@ -15,10 +15,10 @@ export const seedThreads = [
     category: "resource",
     score: 128,
     ageHours: 5,
-    title: "A curated collection of public domain landscape illustrations",
+    title: "Coleccion curada de ilustraciones de paisajes en dominio publico",
     author: "SilasWeaver",
     content:
-      "I spent the weekend compiling high-resolution scans of nature books with beautiful grain and airbrush textures. They work perfectly for editorial backgrounds and hero sections.",
+      "Pase el fin de semana compilando escaneos en alta resolucion de libros de naturaleza, con gran textura y acabado de aerografo. Funcionan perfecto para fondos editoriales y secciones hero.",
     comments: 12
   },
   {
@@ -26,10 +26,10 @@ export const seedThreads = [
     category: "help",
     score: 89,
     ageHours: 8,
-    title: "How to achieve precise font rendering across operating systems?",
+    title: "Como lograr un renderizado tipografico consistente entre sistemas?",
     author: "Nova_Core",
     content:
-      "Fraunces looks rich on macOS but can turn brittle on some Windows setups at smaller sizes. Which weight pairings and fallbacks produce the most stable serif details?",
+      "Fraunces se ve excelente en macOS, pero en algunos equipos Windows pierde calidad en tamanos pequenos. Que combinacion de pesos y fuentes fallback da resultados mas estables?",
     comments: 31
   },
   {
@@ -37,10 +37,10 @@ export const seedThreads = [
     category: "discussion",
     score: 64,
     ageHours: 1,
-    title: "What makes a thread title irresistible but not clickbait?",
+    title: "Que hace que un titulo atraiga sin caer en clickbait?",
     author: "IrisPatch",
     content:
-      "I am trying to improve thread quality by rewriting vague titles. Do you follow a format that keeps curiosity high while still being specific and searchable?",
+      "Quiero mejorar la calidad de los hilos reescribiendo titulos vagos. Usan algun formato que mantenga curiosidad, pero que siga siendo especifico y facil de buscar?",
     comments: 9
   }
 ];

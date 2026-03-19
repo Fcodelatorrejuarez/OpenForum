@@ -7,16 +7,16 @@ const FALLBACK_SUBFORUM_NAME = "ClubDeLaIA";
 const FALLBACK_SUBFORUM_SLUG = "clubdelaia";
 
 const sortOptions = [
-  { id: "trending", label: "Trending" },
-  { id: "newest", label: "Newest" },
-  { id: "top", label: "Top" }
+  { id: "trending", label: "Tendencia" },
+  { id: "newest", label: "Nuevos" },
+  { id: "top", label: "Mejores" }
 ];
 
 const categoryOptions = [
-  { id: "all", label: "All" },
-  { id: "discussion", label: "Discussion" },
-  { id: "resource", label: "Resource" },
-  { id: "help", label: "Help" }
+  { id: "all", label: "Todo" },
+  { id: "discussion", label: "Debate" },
+  { id: "resource", label: "Recursos" },
+  { id: "help", label: "Ayuda" }
 ];
 
 const categoryClass = {
@@ -26,10 +26,22 @@ const categoryClass = {
 };
 
 const categoryLabel = {
-  discussion: "Discussion",
-  resource: "Resource",
-  help: "Help"
+  discussion: "Debate",
+  resource: "Recursos",
+  help: "Ayuda"
 };
+
+const commentSortOptions = [
+  { id: "popular", label: "Popular" },
+  { id: "newest", label: "Nuevo" },
+  { id: "oldest", label: "Antiguo" }
+];
+
+const commentAccentColors = ["#ff4500", "#0079d3", "#46d160", "#ffb000", "#ea0027", "#7193ff", "#ff585b", "#25b79f"];
+
+function makeClientId(prefix = "c") {
+  return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+}
 
 async function apiFetch(path, options = {}) {
   const response = await fetch(`${API_BASE}${path}`, {
@@ -71,7 +83,7 @@ function getFallbackSubforums(postCount = 0) {
       id: FALLBACK_SUBFORUM_ID,
       name: FALLBACK_SUBFORUM_NAME,
       slug: FALLBACK_SUBFORUM_SLUG,
-      description: "General forum for practical AI and web development topics.",
+      description: "Foro general para temas practicos de IA y desarrollo web.",
       postCount
     }
   ];
@@ -157,13 +169,418 @@ function filterThreads(items, query, category, subforumId) {
 
 function timeAgo(hours) {
   if (hours <= 1) {
-    return "1 hour ago";
+    return "hace 1 hora";
   }
   if (hours < 24) {
-    return `${hours} hours ago`;
+    return `hace ${hours} horas`;
   }
   const days = Math.round(hours / 24);
-  return days <= 1 ? "1 day ago" : `${days} days ago`;
+  return days <= 1 ? "hace 1 dia" : `hace ${days} dias`;
+}
+
+function hashColorForAuthor(author) {
+  const source = String(author ?? "desconocido");
+  let hash = 0;
+  for (const char of source) {
+    hash = (hash * 31 + char.charCodeAt(0)) & 0xffff;
+  }
+  return commentAccentColors[Math.abs(hash) % commentAccentColors.length];
+}
+
+function commentTimestamp(value) {
+  const timestamp = new Date(value).getTime();
+  return Number.isNaN(timestamp) ? 0 : timestamp;
+}
+
+function commentTimeAgo(value) {
+  const timestamp = commentTimestamp(value);
+  if (!timestamp) {
+    return "ahora";
+  }
+
+  const diffMinutes = Math.max(0, Math.floor((Date.now() - timestamp) / 60000));
+  if (diffMinutes < 1) {
+    return "ahora";
+  }
+  if (diffMinutes < 60) {
+    return `${diffMinutes}m`;
+  }
+
+  const hours = Math.floor(diffMinutes / 60);
+  if (hours < 24) {
+    return `${hours}h`;
+  }
+
+  const days = Math.floor(hours / 24);
+  return `${days}d`;
+}
+
+function normalizeCommentNode(comment) {
+  return {
+    id: String(comment?.id ?? makeClientId("comment")),
+    author: comment?.author ?? "desconocido",
+    createdAt: typeof comment?.createdAt === "string" ? comment.createdAt : new Date().toISOString(),
+    content: typeof comment?.content === "string" ? comment.content : "",
+    score: Number.isFinite(comment?.score) ? Number(comment.score) : 1,
+    replies: Array.isArray(comment?.replies) ? comment.replies.map((reply) => normalizeCommentNode(reply)) : []
+  };
+}
+
+function normalizeComments(nodes) {
+  return Array.isArray(nodes) ? nodes.map((node) => normalizeCommentNode(node)) : [];
+}
+
+function countCommentTree(nodes) {
+  return nodes.reduce((total, node) => total + 1 + countCommentTree(node.replies ?? []), 0);
+}
+
+function sortCommentTree(nodes, mode) {
+  const sorted = [...nodes];
+
+  sorted.sort((a, b) => {
+    if (mode === "newest") {
+      return commentTimestamp(b.createdAt) - commentTimestamp(a.createdAt);
+    }
+
+    if (mode === "oldest") {
+      return commentTimestamp(a.createdAt) - commentTimestamp(b.createdAt);
+    }
+
+    if (b.score !== a.score) {
+      return b.score - a.score;
+    }
+
+    return commentTimestamp(b.createdAt) - commentTimestamp(a.createdAt);
+  });
+
+  return sorted.map((node) => ({
+    ...node,
+    replies: sortCommentTree(node.replies ?? [], mode)
+  }));
+}
+
+function appendReplyToCommentTree(nodes, parentId, replyNode) {
+  let inserted = false;
+
+  const comments = nodes.map((node) => {
+    if (node.id === parentId) {
+      inserted = true;
+      return {
+        ...node,
+        replies: [replyNode, ...(node.replies ?? [])]
+      };
+    }
+
+    if (!node.replies || node.replies.length === 0) {
+      return node;
+    }
+
+    const nestedResult = appendReplyToCommentTree(node.replies, parentId, replyNode);
+    if (!nestedResult.inserted) {
+      return node;
+    }
+
+    inserted = true;
+    return {
+      ...node,
+      replies: nestedResult.comments
+    };
+  });
+
+  return { comments, inserted };
+}
+
+function createLocalComment(author, content) {
+  return {
+    id: makeClientId("local"),
+    author,
+    createdAt: new Date().toISOString(),
+    content,
+    score: 1,
+    replies: []
+  };
+}
+
+function CommentNode({
+  comment,
+  postAuthor,
+  collapsedById,
+  replyOpenById,
+  replyDraftById,
+  voteByCommentId,
+  currentUser,
+  onRequireAuth,
+  onToggleCollapse,
+  onToggleReplyForm,
+  onReplyDraftChange,
+  onReplySubmit,
+  onCommentVote
+}) {
+  const isCollapsed = Boolean(collapsedById[comment.id]);
+  const isReplyOpen = Boolean(replyOpenById[comment.id]);
+  const isOp = comment.author === postAuthor;
+  const accentColor = hashColorForAuthor(comment.author);
+  const voteState = voteByCommentId[comment.id] ?? 0;
+  const visibleScore = comment.score + voteState;
+
+  return (
+    <div className={`rc-comment ${isCollapsed ? "collapsed" : ""}`}>
+      <button
+        type="button"
+        className="rc-thread-gutter"
+        onClick={() => onToggleCollapse(comment.id)}
+        aria-label={isCollapsed ? "Expandir comentario" : "Colapsar comentario"}
+      >
+        <span className="rc-avatar-dot" style={{ background: accentColor }} aria-hidden="true"></span>
+      </button>
+
+      <div className="rc-comment-inner">
+        <div className="rc-comment-header">
+          <span className={`rc-author ${isOp ? "op" : ""}`} style={{ color: isOp ? "#ff4500" : accentColor }}>
+            u/{comment.author}
+          </span>
+          {isOp ? <span className="rc-flair rc-op-flair">OP</span> : null}
+          <span className="rc-time">{commentTimeAgo(comment.createdAt)}</span>
+          <span className="rc-collapsed-indicator">[+] hilo colapsado</span>
+        </div>
+
+        <div className="rc-comment-body">
+          {comment.content
+            .split(/\n+/)
+            .filter((line) => line.trim().length > 0)
+            .map((line, index) => (
+              <p key={`${comment.id}-${index}`}>{line}</p>
+            ))}
+        </div>
+
+        <div className="rc-comment-actions">
+          <div className="rc-vote-group">
+            <button
+              type="button"
+              className={`rc-vote-btn ${voteState === 1 ? "active-up" : ""}`}
+              onClick={() => onCommentVote(comment.id, "up")}
+              aria-label="Voto positivo"
+            >
+              ▲
+            </button>
+            <span className="rc-vote-count">{visibleScore}</span>
+            <button
+              type="button"
+              className={`rc-vote-btn down ${voteState === -1 ? "active-down" : ""}`}
+              onClick={() => onCommentVote(comment.id, "down")}
+              aria-label="Voto negativo"
+            >
+              ▼
+            </button>
+          </div>
+
+          <button
+            type="button"
+            className="rc-act-btn rc-reply-btn"
+            onClick={() => {
+              if (!currentUser) {
+                onRequireAuth();
+                return;
+              }
+              onToggleReplyForm(comment.id);
+            }}
+          >
+            Responder
+          </button>
+          <button type="button" className="rc-act-btn">
+            Compartir
+          </button>
+        </div>
+
+        <div className={`rc-reply-form ${isReplyOpen ? "open" : ""}`}>
+          <textarea
+            value={replyDraftById[comment.id] ?? ""}
+            onChange={(event) => onReplyDraftChange(comment.id, event.target.value)}
+            placeholder="Escribe una respuesta..."
+          ></textarea>
+          <div className="rc-reply-form-actions">
+            <button type="button" className="rc-btn-cancel" onClick={() => onToggleReplyForm(comment.id, false)}>
+              Cancelar
+            </button>
+            <button
+              type="button"
+              className="rc-btn-submit"
+              onClick={() => {
+                if (!currentUser) {
+                  onRequireAuth();
+                  return;
+                }
+                void onReplySubmit(comment.id);
+              }}
+            >
+              Responder
+            </button>
+          </div>
+        </div>
+
+        <div className="rc-replies">
+          {(comment.replies ?? []).map((reply) => (
+            <CommentNode
+              key={reply.id}
+              comment={reply}
+              postAuthor={postAuthor}
+              collapsedById={collapsedById}
+              replyOpenById={replyOpenById}
+              replyDraftById={replyDraftById}
+              voteByCommentId={voteByCommentId}
+              currentUser={currentUser}
+              onRequireAuth={onRequireAuth}
+              onToggleCollapse={onToggleCollapse}
+              onToggleReplyForm={onToggleReplyForm}
+              onReplyDraftChange={onReplyDraftChange}
+              onReplySubmit={onReplySubmit}
+              onCommentVote={onCommentVote}
+            />
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ThreadCommentsSection({
+  thread,
+  comments,
+  commentsLoading,
+  commentNotice,
+  commentDraft,
+  onCommentDraftChange,
+  onCommentSubmit,
+  commentSubmitting,
+  currentUser,
+  onRequireAuth,
+  onReplySubmit
+}) {
+  const [sortMode, setSortMode] = useState("popular");
+  const [collapsedById, setCollapsedById] = useState({});
+  const [replyOpenById, setReplyOpenById] = useState({});
+  const [replyDraftById, setReplyDraftById] = useState({});
+  const [voteByCommentId, setVoteByCommentId] = useState({});
+
+  const sortedComments = useMemo(() => sortCommentTree(comments, sortMode), [comments, sortMode]);
+  const commentCount = useMemo(() => countCommentTree(comments), [comments]);
+
+  function onToggleCollapse(commentId) {
+    setCollapsedById((current) => ({ ...current, [commentId]: !current[commentId] }));
+  }
+
+  function onToggleReplyForm(commentId, forceOpen) {
+    setReplyOpenById((current) => {
+      const nextValue = typeof forceOpen === "boolean" ? forceOpen : !current[commentId];
+      return { ...current, [commentId]: nextValue };
+    });
+  }
+
+  function onReplyDraftChange(commentId, value) {
+    setReplyDraftById((current) => ({ ...current, [commentId]: value }));
+  }
+
+  function onCommentVote(commentId, direction) {
+    setVoteByCommentId((current) => {
+      const previous = current[commentId] ?? 0;
+      const next = direction === "up" ? (previous === 1 ? 0 : 1) : previous === -1 ? 0 : -1;
+      return { ...current, [commentId]: next };
+    });
+  }
+
+  async function submitReply(parentCommentId) {
+    const text = (replyDraftById[parentCommentId] ?? "").trim();
+    if (!text) {
+      return;
+    }
+
+    const created = await onReplySubmit(thread.id, parentCommentId, text);
+    if (!created) {
+      return;
+    }
+
+    setReplyDraftById((current) => ({ ...current, [parentCommentId]: "" }));
+    onToggleReplyForm(parentCommentId, false);
+  }
+
+  return (
+    <div className="comments-panel reddit-comments">
+      <div className="rc-post-meta">
+        <span>u/{thread.author}</span>
+        <span className="rc-dot">·</span>
+        <span>{timeAgo(thread.ageHours)}</span>
+        <span className="rc-dot">·</span>
+        <span>r/{thread.subforumSlug}</span>
+      </div>
+
+      <div className="rc-sort-bar">
+        <span>Ordenar por:</span>
+        {commentSortOptions.map((option) => (
+          <button
+            key={option.id}
+            type="button"
+            className={sortMode === option.id ? "active" : ""}
+            onClick={() => setSortMode(option.id)}
+          >
+            {option.label}
+          </button>
+        ))}
+      </div>
+
+      <div className="rc-new-comment-area">
+        <textarea
+          value={commentDraft}
+          onChange={(event) => onCommentDraftChange(thread.id, event.target.value)}
+          placeholder={currentUser ? "Que piensas?" : "Inicia sesion para comentar"}
+          disabled={!currentUser}
+        ></textarea>
+        <div className="rc-reply-form-actions">
+          {currentUser ? (
+            <button type="button" className="rc-btn-submit" onClick={() => onCommentSubmit(thread.id)} disabled={commentSubmitting}>
+              {commentSubmitting ? "Enviando..." : "Comentar"}
+            </button>
+          ) : (
+            <button type="button" className="rc-btn-submit" onClick={onRequireAuth}>
+              Inicia sesion
+            </button>
+          )}
+        </div>
+      </div>
+
+      <p className="rc-comment-count">{commentCount} comentarios</p>
+
+      {commentNotice ? <p className="rc-empty">{commentNotice}</p> : null}
+
+      {commentsLoading ? <p className="rc-empty">Cargando comentarios...</p> : null}
+
+      {!commentsLoading && sortedComments.length === 0 ? (
+        <p className="rc-empty">No hay comentarios aun. Se el primero en comentar.</p>
+      ) : null}
+
+      {!commentsLoading && sortedComments.length > 0 ? (
+        <div className="rc-comments-root">
+          {sortedComments.map((comment) => (
+            <CommentNode
+              key={comment.id}
+              comment={comment}
+              postAuthor={thread.author}
+              collapsedById={collapsedById}
+              replyOpenById={replyOpenById}
+              replyDraftById={replyDraftById}
+              voteByCommentId={voteByCommentId}
+              currentUser={currentUser}
+              onRequireAuth={onRequireAuth}
+              onToggleCollapse={onToggleCollapse}
+              onToggleReplyForm={onToggleReplyForm}
+              onReplyDraftChange={onReplyDraftChange}
+              onReplySubmit={submitReply}
+              onCommentVote={onCommentVote}
+            />
+          ))}
+        </div>
+      ) : null}
+    </div>
+  );
 }
 
 function VoteColumn({ threadId, baseScore, voteState, onVote }) {
@@ -174,7 +591,7 @@ function VoteColumn({ threadId, baseScore, voteState, onVote }) {
       <button
         className={`vote-btn upvote ${voteState === 1 ? "active" : ""}`}
         type="button"
-        aria-label="Upvote"
+        aria-label="Voto positivo"
         onClick={() => onVote(threadId, "up")}
       >
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor">
@@ -185,7 +602,7 @@ function VoteColumn({ threadId, baseScore, voteState, onVote }) {
       <button
         className={`vote-btn downvote ${voteState === -1 ? "active" : ""}`}
         type="button"
-        aria-label="Downvote"
+        aria-label="Voto negativo"
         onClick={() => onVote(threadId, "down")}
       >
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor">
@@ -206,13 +623,15 @@ function ThreadCard({
   onToggleComments,
   comments,
   commentsLoading,
+  commentNotice,
   commentDraft,
   onCommentDraftChange,
   onCommentSubmit,
   commentSubmitting,
   currentUser,
   onRequireAuth,
-  onSelectSubforum
+  onSelectSubforum,
+  onReplySubmit
 }) {
   return (
     <article className="thread-card">
@@ -223,12 +642,12 @@ function ThreadCard({
             type="button"
             className="community-link"
             onClick={() => onSelectSubforum(thread.subforumId)}
-            aria-label={`Open r/${thread.subforumSlug}`}
+            aria-label={`Abrir r/${thread.subforumSlug}`}
           >
             r/{thread.subforumSlug}
           </button>
           <span>•</span>
-          <span>Posted by u/{thread.author}</span>
+          <span>Publicado por u/{thread.author}</span>
           <span>•</span>
           <span>{timeAgo(thread.ageHours)}</span>
           <span className={categoryClass[thread.category]}>{categoryLabel[thread.category]}</span>
@@ -241,69 +660,36 @@ function ThreadCard({
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor">
               <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path>
             </svg>
-            <span>{thread.comments} Comments</span>
+            <span>{thread.comments} Comentarios</span>
           </button>
 
           <button
             type="button"
             className={isLiked ? "liked-btn" : ""}
-            aria-label={isLiked ? "Unlike post" : "Like post"}
+            aria-label={isLiked ? "Quitar me gusta" : "Me gusta"}
             onClick={() => onToggleLike(thread.id)}
           >
             <svg viewBox="0 0 24 24" fill={isLiked ? "currentColor" : "none"} stroke="currentColor">
               <path d="M12 21s-6.7-4.35-9.2-8.1C.98 10.14 1.55 6.8 4.6 5.45A5.08 5.08 0 0 1 12 8.02a5.08 5.08 0 0 1 7.4-2.57c3.05 1.35 3.62 4.69 1.8 7.45C18.7 16.65 12 21 12 21z"></path>
             </svg>
-            <span>{isLiked ? "Liked" : "Like"}</span>
+            <span>{isLiked ? "Te gusta" : "Me gusta"}</span>
           </button>
         </div>
 
         {commentsOpen ? (
-          <div className="comments-panel">
-            {commentsLoading ? <p className="comment-empty">Loading comments...</p> : null}
-
-            {!commentsLoading && comments.length === 0 ? (
-              <p className="comment-empty">No comments yet. Be the first to comment.</p>
-            ) : null}
-
-            {!commentsLoading && comments.length > 0 ? (
-              <ul className="comments-list">
-                {comments.map((comment) => (
-                  <li key={comment.id} className="comment-item">
-                    <p className="comment-meta">
-                      <strong>u/{comment.author}</strong>
-                      <span>•</span>
-                      <span>{new Date(comment.createdAt).toLocaleString()}</span>
-                    </p>
-                    <p className="comment-content">{comment.content}</p>
-                  </li>
-                ))}
-              </ul>
-            ) : null}
-
-            {currentUser ? (
-              <form
-                className="comment-form"
-                onSubmit={(event) => {
-                  event.preventDefault();
-                  onCommentSubmit(thread.id);
-                }}
-              >
-                <textarea
-                  value={commentDraft}
-                  onChange={(event) => onCommentDraftChange(thread.id, event.target.value)}
-                  rows={2}
-                  placeholder="Write your comment"
-                ></textarea>
-                <button type="submit" className="btn-primary" disabled={commentSubmitting}>
-                  {commentSubmitting ? "Sending..." : "Comment"}
-                </button>
-              </form>
-            ) : (
-              <button type="button" className="comment-login-btn" onClick={onRequireAuth}>
-                Sign in to comment
-              </button>
-            )}
-          </div>
+          <ThreadCommentsSection
+            thread={thread}
+            comments={comments}
+            commentsLoading={commentsLoading}
+            commentNotice={commentNotice}
+            commentDraft={commentDraft}
+            onCommentDraftChange={onCommentDraftChange}
+            onCommentSubmit={onCommentSubmit}
+            commentSubmitting={commentSubmitting}
+            currentUser={currentUser}
+            onRequireAuth={onRequireAuth}
+            onReplySubmit={onReplySubmit}
+          />
         ) : null}
       </div>
     </article>
@@ -361,20 +747,20 @@ function NewThreadModal({ open, onClose, onCreate, creating, subforums, defaultS
   const disabled = creating || subforums.length === 0;
 
   return (
-    <div className="modal-overlay" role="dialog" aria-modal="true" aria-label="Create new thread">
+    <div className="modal-overlay" role="dialog" aria-modal="true" aria-label="Crear nuevo hilo">
       <form className="modal" onSubmit={onSubmit}>
-        <h2>Create Post</h2>
+        <h2>Crear Publicacion</h2>
 
         <label>
-          <span>Title</span>
-          <input name="title" value={form.title} onChange={onChange} placeholder="Write a descriptive post title" />
+          <span>Titulo</span>
+          <input name="title" value={form.title} onChange={onChange} placeholder="Escribe un titulo claro para tu publicacion" />
         </label>
 
         <label>
-          <span>Subforum</span>
+          <span>Subforo</span>
           <select name="subforumId" value={form.subforumId} onChange={onChange} disabled={subforums.length === 0}>
             <option value="" disabled>
-              {subforums.length === 0 ? "No subforums available" : "Select a subforum"}
+              {subforums.length === 0 ? "No hay subforos disponibles" : "Selecciona un subforo"}
             </option>
             {subforums.map((subforum) => (
               <option key={subforum.id} value={subforum.id}>
@@ -385,22 +771,22 @@ function NewThreadModal({ open, onClose, onCreate, creating, subforums, defaultS
         </label>
 
         <label>
-          <span>Category</span>
+          <span>Categoria</span>
           <select name="category" value={form.category} onChange={onChange}>
-            <option value="discussion">Discussion</option>
-            <option value="resource">Resource</option>
-            <option value="help">Help</option>
+            <option value="discussion">Debate</option>
+            <option value="resource">Recursos</option>
+            <option value="help">Ayuda</option>
           </select>
         </label>
 
         <label>
-          <span>Content</span>
+          <span>Contenido</span>
           <textarea
             name="content"
             value={form.content}
             onChange={onChange}
             rows={4}
-            placeholder="Add your post text, links, or question details"
+            placeholder="Agrega el texto, enlaces o detalles de tu pregunta"
           ></textarea>
         </label>
 
@@ -408,10 +794,10 @@ function NewThreadModal({ open, onClose, onCreate, creating, subforums, defaultS
 
         <div className="modal-actions">
           <button type="button" className="btn-secondary" onClick={onClose} disabled={creating}>
-            Cancel
+            Cancelar
           </button>
           <button type="submit" className="btn-primary" disabled={disabled}>
-            {creating ? "Posting..." : "Post"}
+            {creating ? "Publicando..." : "Publicar"}
           </button>
         </div>
       </form>
@@ -444,29 +830,29 @@ function AuthModal({ open, mode, onClose, onSwitchMode, onSubmit, loading, error
   }
 
   return (
-    <div className="modal-overlay" role="dialog" aria-modal="true" aria-label="Authentication">
+    <div className="modal-overlay" role="dialog" aria-modal="true" aria-label="Autenticacion">
       <form className="modal" onSubmit={submit}>
-        <h2>{mode === "register" ? "Create account" : "Sign in"}</h2>
+        <h2>{mode === "register" ? "Crear cuenta" : "Iniciar sesion"}</h2>
 
         <label>
-          <span>Username</span>
+          <span>Usuario</span>
           <input
             name="username"
             value={form.username}
             onChange={onChange}
-            placeholder="your_username"
+            placeholder="tu_usuario"
             required
           />
         </label>
 
         <label>
-          <span>Password</span>
+          <span>Contrasena</span>
           <input
             name="password"
             type="password"
             value={form.password}
             onChange={onChange}
-            placeholder={mode === "register" ? "At least 8 chars, letter and number" : "Your password"}
+            placeholder={mode === "register" ? "Minimo 8 caracteres, letra y numero" : "Tu contrasena"}
             required
           />
         </label>
@@ -475,15 +861,15 @@ function AuthModal({ open, mode, onClose, onSwitchMode, onSubmit, loading, error
 
         <div className="modal-actions">
           <button type="button" className="btn-secondary" onClick={onClose} disabled={loading}>
-            Cancel
+            Cancelar
           </button>
           <button type="submit" className="btn-primary" disabled={loading}>
-            {loading ? "Please wait..." : mode === "register" ? "Create account" : "Sign in"}
+            {loading ? "Espera..." : mode === "register" ? "Crear cuenta" : "Iniciar sesion"}
           </button>
         </div>
 
         <button type="button" className="auth-switch" onClick={onSwitchMode}>
-          {mode === "register" ? "Already have an account? Sign in" : "Need an account? Register"}
+          {mode === "register" ? "Ya tienes cuenta? Inicia sesion" : "Necesitas cuenta? Registrate"}
         </button>
       </form>
     </div>
@@ -529,23 +915,23 @@ function NewSubforumModal({ open, onClose, onCreate, creating, error }) {
   }
 
   return (
-    <div className="modal-overlay" role="dialog" aria-modal="true" aria-label="Create new subforum">
+    <div className="modal-overlay" role="dialog" aria-modal="true" aria-label="Crear nuevo subforo">
       <form className="modal" onSubmit={onSubmit}>
-        <h2>Create Subforum</h2>
+        <h2>Crear Subforo</h2>
 
         <label>
-          <span>Name</span>
+          <span>Nombre</span>
           <input name="name" value={form.name} onChange={onChange} placeholder="Frontend, DevOps, UX Writing..." />
         </label>
 
         <label>
-          <span>Description</span>
+          <span>Descripcion</span>
           <textarea
             name="description"
             value={form.description}
             onChange={onChange}
             rows={3}
-            placeholder="What topics belong to this subforum?"
+            placeholder="Que temas pertenecen a este subforo?"
           ></textarea>
         </label>
 
@@ -553,10 +939,10 @@ function NewSubforumModal({ open, onClose, onCreate, creating, error }) {
 
         <div className="modal-actions">
           <button type="button" className="btn-secondary" onClick={onClose} disabled={creating}>
-            Cancel
+            Cancelar
           </button>
           <button type="submit" className="btn-primary" disabled={creating}>
-            {creating ? "Creating..." : "Create Subforum"}
+            {creating ? "Creando..." : "Crear Subforo"}
           </button>
         </div>
       </form>
@@ -592,6 +978,7 @@ export default function App() {
   const [commentDraftByPost, setCommentDraftByPost] = useState({});
   const [commentsLoadingByPost, setCommentsLoadingByPost] = useState({});
   const [commentSubmittingByPost, setCommentSubmittingByPost] = useState({});
+  const [commentNoticeByPost, setCommentNoticeByPost] = useState({});
 
   const [isPostModalOpen, setIsPostModalOpen] = useState(false);
   const [isSubforumModalOpen, setIsSubforumModalOpen] = useState(false);
@@ -643,10 +1030,10 @@ export default function App() {
           await Promise.all([apiFetch("/posts"), apiFetch("/subforums")]);
 
         if (!postsResponse.ok) {
-          throw new Error(postsPayload?.error || "Could not load posts");
+          throw new Error(postsPayload?.error || "No se pudieron cargar las publicaciones");
         }
         if (!subforumsResponse.ok) {
-          throw new Error(subforumsPayload?.error || "Could not load subforums");
+          throw new Error(subforumsPayload?.error || "No se pudieron cargar los subforos");
         }
 
         const mappedPosts = Array.isArray(postsPayload?.posts) ? postsPayload.posts.map(mapApiPostToThread) : [];
@@ -738,10 +1125,10 @@ export default function App() {
       const { response, payload } = await apiFetch(`/posts/${postId}/comments`);
 
       if (!response.ok) {
-        throw new Error(payload?.error || "Could not load comments");
+        throw new Error(payload?.error || "No se pudieron cargar los comentarios");
       }
 
-      setCommentsByPost((current) => ({ ...current, [postId]: payload?.comments ?? [] }));
+      setCommentsByPost((current) => ({ ...current, [postId]: normalizeComments(payload?.comments) }));
     } catch {
       setCommentsByPost((current) => ({ ...current, [postId]: current[postId] ?? [] }));
     } finally {
@@ -763,6 +1150,20 @@ export default function App() {
     setCommentDraftByPost((current) => ({ ...current, [postId]: value }));
   }
 
+  function increaseThreadCommentCount(postId, fallbackDelta = 1, serverCount) {
+    setThreads((current) =>
+      current.map((thread) => {
+        if (thread.id !== postId) {
+          return thread;
+        }
+
+        const fallbackCount = thread.comments + fallbackDelta;
+        const safeServerCount = Number.isFinite(serverCount) ? Number(serverCount) : fallbackCount;
+        return { ...thread, comments: Math.max(safeServerCount, fallbackCount) };
+      })
+    );
+  }
+
   async function onCommentSubmit(postId) {
     const draft = (commentDraftByPost[postId] ?? "").trim();
     if (!draft) {
@@ -770,9 +1171,11 @@ export default function App() {
     }
 
     if (!currentUser) {
-      requireAuth("Sign in first to comment.");
+      requireAuth("Inicia sesion para comentar.");
       return;
     }
+
+    setCommentNoticeByPost((current) => ({ ...current, [postId]: "" }));
 
     setCommentSubmittingByPost((current) => ({ ...current, [postId]: true }));
 
@@ -788,32 +1191,170 @@ export default function App() {
       if (!response.ok) {
         if (response.status === 401) {
           setCurrentUser(null);
-          requireAuth("Session expired. Sign in again.");
+          requireAuth("La sesion expiro. Inicia sesion de nuevo.");
           return;
         }
-        throw new Error(payload?.error || "Could not create comment");
+
+        // If server cannot persist (fallback data or temporary backend issue), keep UX functional locally.
+        if (response.status === 404 || response.status >= 500) {
+          const localComment = createLocalComment(currentUser.username, draft);
+          setCommentsByPost((current) => ({
+            ...current,
+            [postId]: [...(current[postId] ?? []), localComment]
+          }));
+          increaseThreadCommentCount(postId, 1);
+          setCommentDraftByPost((current) => ({ ...current, [postId]: "" }));
+          setCommentNoticeByPost((current) => ({
+            ...current,
+            [postId]: "Comentario guardado localmente. El servidor no pudo guardarlo por ahora."
+          }));
+          return;
+        }
+
+        throw new Error(payload?.error || "No se pudo crear el comentario");
       }
 
       setCommentsByPost((current) => ({
         ...current,
-        [postId]: [...(current[postId] ?? []), payload?.comment]
+        [postId]: [...(current[postId] ?? []), normalizeCommentNode(payload?.comment)]
       }));
 
-      setThreads((current) =>
-        current.map((thread) =>
-          thread.id === postId ? { ...thread, comments: payload?.comments ?? thread.comments + 1 } : thread
-        )
-      );
+      increaseThreadCommentCount(postId, 1, payload?.comments);
 
       setCommentDraftByPost((current) => ({ ...current, [postId]: "" }));
+      setCommentNoticeByPost((current) => ({ ...current, [postId]: "" }));
 
       if (payload?.user) {
         setCurrentUser(payload.user);
       }
     } catch (error) {
-      const message = error instanceof Error ? error.message : "Could not create comment";
-      setCreatePostError("");
-      requireAuth(message);
+      const localComment = createLocalComment(currentUser.username, draft);
+      setCommentsByPost((current) => ({
+        ...current,
+        [postId]: [...(current[postId] ?? []), localComment]
+      }));
+      increaseThreadCommentCount(postId, 1);
+      setCommentDraftByPost((current) => ({ ...current, [postId]: "" }));
+
+      const message = error instanceof Error ? error.message : "No se pudo crear el comentario";
+      setCommentNoticeByPost((current) => ({
+        ...current,
+        [postId]: `Comentario guardado localmente. Error del servidor: ${message}`
+      }));
+    } finally {
+      setCommentSubmittingByPost((current) => ({ ...current, [postId]: false }));
+    }
+  }
+
+  async function onReplySubmit(postId, parentCommentId, content) {
+    const draft = content.trim();
+    if (!draft) {
+      return false;
+    }
+
+    if (!currentUser) {
+      requireAuth("Inicia sesion para comentar.");
+      return false;
+    }
+
+    setCommentNoticeByPost((current) => ({ ...current, [postId]: "" }));
+
+    setCommentSubmittingByPost((current) => ({ ...current, [postId]: true }));
+
+    try {
+      const { response, payload } = await apiFetch(`/posts/${postId}/comments`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({ content: draft, parentCommentId })
+      });
+
+      if (!response.ok) {
+        if (response.status === 401) {
+          setCurrentUser(null);
+          requireAuth("La sesion expiro. Inicia sesion de nuevo.");
+          return false;
+        }
+
+        if (response.status === 404 || response.status >= 500) {
+          const localReply = createLocalComment(currentUser.username, draft);
+          setCommentsByPost((current) => {
+            const existing = current[postId] ?? [];
+            const appended = appendReplyToCommentTree(existing, parentCommentId, localReply);
+            if (!appended.inserted) {
+              return {
+                ...current,
+                [postId]: [localReply, ...existing]
+              };
+            }
+
+            return {
+              ...current,
+              [postId]: appended.comments
+            };
+          });
+          increaseThreadCommentCount(postId, 1);
+          setCommentNoticeByPost((current) => ({
+            ...current,
+            [postId]: "Respuesta guardada localmente. El servidor no pudo guardarla por ahora."
+          }));
+          return true;
+        }
+
+        throw new Error(payload?.error || "No se pudo crear la respuesta");
+      }
+
+      const replyNode = normalizeCommentNode(payload?.comment);
+      setCommentsByPost((current) => {
+        const existing = current[postId] ?? [];
+        const appended = appendReplyToCommentTree(existing, parentCommentId, replyNode);
+        if (!appended.inserted) {
+          return {
+            ...current,
+            [postId]: [replyNode, ...existing]
+          };
+        }
+
+        return {
+          ...current,
+          [postId]: appended.comments
+        };
+      });
+
+      increaseThreadCommentCount(postId, 1, payload?.comments);
+      setCommentNoticeByPost((current) => ({ ...current, [postId]: "" }));
+
+      if (payload?.user) {
+        setCurrentUser(payload.user);
+      }
+
+      return true;
+    } catch (error) {
+      const localReply = createLocalComment(currentUser.username, draft);
+      setCommentsByPost((current) => {
+        const existing = current[postId] ?? [];
+        const appended = appendReplyToCommentTree(existing, parentCommentId, localReply);
+        if (!appended.inserted) {
+          return {
+            ...current,
+            [postId]: [localReply, ...existing]
+          };
+        }
+
+        return {
+          ...current,
+          [postId]: appended.comments
+        };
+      });
+      increaseThreadCommentCount(postId, 1);
+
+      const message = error instanceof Error ? error.message : "No se pudo crear la respuesta";
+      setCommentNoticeByPost((current) => ({
+        ...current,
+        [postId]: `Respuesta guardada localmente. Error del servidor: ${message}`
+      }));
+      return true;
     } finally {
       setCommentSubmittingByPost((current) => ({ ...current, [postId]: false }));
     }
@@ -821,7 +1362,7 @@ export default function App() {
 
   function openCreatePost() {
     if (!currentUser) {
-      requireAuth("Sign in first to create posts.");
+      requireAuth("Inicia sesion para crear publicaciones.");
       return;
     }
 
@@ -835,7 +1376,7 @@ export default function App() {
 
   function openCreateSubforum() {
     if (!currentUser) {
-      requireAuth("Sign in first to create subforums.");
+      requireAuth("Inicia sesion para crear subforos.");
       return;
     }
 
@@ -845,7 +1386,7 @@ export default function App() {
 
   async function onCreateThread(postInput) {
     if (!currentUser) {
-      requireAuth("Sign in first to create posts.");
+      requireAuth("Inicia sesion para crear publicaciones.");
       return false;
     }
 
@@ -864,10 +1405,10 @@ export default function App() {
       if (!response.ok) {
         if (response.status === 401) {
           setCurrentUser(null);
-          requireAuth("Session expired. Sign in again.");
+          requireAuth("La sesion expiro. Inicia sesion de nuevo.");
           return false;
         }
-        throw new Error(payload?.error || "Could not create post");
+        throw new Error(payload?.error || "No se pudo crear la publicacion");
       }
 
       const mappedPost = mapApiPostToThread(payload?.post);
@@ -883,7 +1424,7 @@ export default function App() {
       setActiveTab("home");
       return true;
     } catch (error) {
-      const message = error instanceof Error ? error.message : "Could not create post";
+      const message = error instanceof Error ? error.message : "No se pudo crear la publicacion";
       setCreatePostError(message);
       return false;
     } finally {
@@ -893,7 +1434,7 @@ export default function App() {
 
   async function onCreateSubforum(input) {
     if (!currentUser) {
-      requireAuth("Sign in first to create subforums.");
+      requireAuth("Inicia sesion para crear subforos.");
       return false;
     }
 
@@ -912,10 +1453,10 @@ export default function App() {
       if (!response.ok) {
         if (response.status === 401) {
           setCurrentUser(null);
-          requireAuth("Session expired. Sign in again.");
+          requireAuth("La sesion expiro. Inicia sesion de nuevo.");
           return false;
         }
-        throw new Error(payload?.error || "Could not create subforum");
+        throw new Error(payload?.error || "No se pudo crear el subforo");
       }
 
       const mappedSubforum = mapApiSubforumToClient(payload?.subforum);
@@ -926,7 +1467,7 @@ export default function App() {
       setActiveTab("home");
       return true;
     } catch (error) {
-      const message = error instanceof Error ? error.message : "Could not create subforum";
+      const message = error instanceof Error ? error.message : "No se pudo crear el subforo";
       setSubforumError(message);
       return false;
     } finally {
@@ -954,14 +1495,14 @@ export default function App() {
       });
 
       if (!response.ok) {
-        throw new Error(payload?.error || "Authentication failed");
+        throw new Error(payload?.error || "La autenticacion fallo");
       }
 
       setCurrentUser(payload?.user ?? null);
       setIsAuthModalOpen(false);
       setAuthError("");
     } catch (error) {
-      setAuthError(error instanceof Error ? error.message : "Authentication failed");
+      setAuthError(error instanceof Error ? error.message : "La autenticacion fallo");
     } finally {
       setAuthLoading(false);
     }
@@ -981,17 +1522,17 @@ export default function App() {
 
   const feedTitle =
     activeTab === "liked"
-      ? "Your liked posts"
+      ? "Tus publicaciones con me gusta"
       : selectedSubforum
         ? `r/${selectedSubforum.slug}`
-        : "All subforums";
+        : "Todos los subforos";
 
   const feedDescription =
     activeTab === "liked"
-      ? "Posts you marked with heart."
+      ? "Publicaciones que marcaste con corazon."
       : selectedSubforum
-        ? selectedSubforum.description || `Threads from ${selectedSubforum.name}.`
-        : "Simple, practical threads for AI and front-end development.";
+        ? selectedSubforum.description || `Hilos de ${selectedSubforum.name}.`
+        : "Hilos simples y practicos sobre IA y desarrollo frontend.";
 
   return (
     <div className="app">
@@ -1008,7 +1549,7 @@ export default function App() {
               className={`header-link-btn ${activeTab === "home" ? "active" : ""}`}
               onClick={() => setActiveTab("home")}
             >
-              Home
+              Inicio
             </button>
             <button
               type="button"
@@ -1016,7 +1557,7 @@ export default function App() {
               onClick={() => setActiveTab("liked")}
             >
               <span className="heart">❤</span>
-              Liked
+              Me gusta
             </button>
           </nav>
 
@@ -1026,16 +1567,16 @@ export default function App() {
                 <span className="username-chip">u/{currentUser.username}</span>
                 <span className="username-chip">Rep: {currentUser.reputation}</span>
                 <button type="button" className="btn-secondary" onClick={logout}>
-                  Logout
+                  Cerrar sesion
                 </button>
               </>
             ) : (
               <button type="button" className="btn-secondary" onClick={() => openAuthModal("login", "")}>
-                Sign in
+                Iniciar sesion
               </button>
             )}
             <button type="button" className="btn-primary" onClick={openCreatePost}>
-              Create Post
+              Crear Publicacion
             </button>
           </div>
         </div>
@@ -1048,7 +1589,7 @@ export default function App() {
             <p>{feedDescription}</p>
           </section>
 
-          <section className="toolbar" aria-label="Feed controls">
+          <section className="toolbar" aria-label="Controles del feed">
             {sortOptions.map((option) => (
               <button
                 key={option.id}
@@ -1074,7 +1615,7 @@ export default function App() {
             </div>
 
             <label className="subforum-filter">
-              <span>Subforum</span>
+              <span>Subforo</span>
               <select
                 value={selectedSubforumId}
                 onChange={(event) => {
@@ -1082,7 +1623,7 @@ export default function App() {
                   setActiveTab("home");
                 }}
               >
-                <option value="all">All</option>
+                <option value="all">Todo</option>
                 {subforums.map((subforum) => (
                   <option key={subforum.id} value={subforum.id}>
                     r/{subforum.slug}
@@ -1091,7 +1632,7 @@ export default function App() {
               </select>
             </label>
 
-            <label className="search-wrap" aria-label="Search threads">
+            <label className="search-wrap" aria-label="Buscar hilos">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor">
                 <circle cx="11" cy="11" r="7"></circle>
                 <path d="m20 20-3.4-3.4"></path>
@@ -1101,13 +1642,13 @@ export default function App() {
                 value={query}
                 onChange={(event) => setQuery(event.target.value)}
                 type="search"
-                placeholder="Search title, author, or content"
+                placeholder="Buscar por titulo, autor o contenido"
               />
             </label>
           </section>
 
           <section className="thread-list">
-            {loadingPosts ? <div className="empty-state">Loading posts...</div> : null}
+            {loadingPosts ? <div className="empty-state">Cargando publicaciones...</div> : null}
 
             {!loadingPosts && visibleThreads.length > 0
               ? visibleThreads.map((thread) => (
@@ -1122,13 +1663,15 @@ export default function App() {
                     onToggleComments={onToggleComments}
                     comments={commentsByPost[thread.id] ?? []}
                     commentsLoading={Boolean(commentsLoadingByPost[thread.id])}
+                    commentNotice={commentNoticeByPost[thread.id] ?? ""}
                     commentDraft={commentDraftByPost[thread.id] ?? ""}
                     onCommentDraftChange={onCommentDraftChange}
                     onCommentSubmit={onCommentSubmit}
                     commentSubmitting={Boolean(commentSubmittingByPost[thread.id])}
                     currentUser={currentUser}
-                    onRequireAuth={() => requireAuth("Sign in first to comment.")}
+                    onRequireAuth={() => requireAuth("Inicia sesion para comentar.")}
                     onSelectSubforum={onSelectSubforum}
+                    onReplySubmit={onReplySubmit}
                   />
                 ))
               : null}
@@ -1136,8 +1679,8 @@ export default function App() {
             {!loadingPosts && visibleThreads.length === 0 ? (
               <div className="empty-state">
                 {activeTab === "liked"
-                  ? "No liked posts yet. Press the heart on any post."
-                  : "No threads match this filter and search combination."}
+                  ? "Aun no tienes publicaciones con me gusta. Presiona el corazon en alguna publicacion."
+                  : "No hay hilos que coincidan con este filtro y busqueda."}
               </div>
             ) : null}
           </section>
@@ -1145,27 +1688,27 @@ export default function App() {
 
         <aside className="sidebar">
           <section className="panel">
-            <h2>About Community</h2>
-            <p>A place to ask questions, share resources, and discuss practical coding and AI topics.</p>
+            <h2>Sobre la comunidad</h2>
+            <p>Un espacio para preguntar, compartir recursos y debatir temas practicos de codigo e IA.</p>
 
             <div className="stats">
               <div>
                 <strong>{threads.length}</strong>
-                <span>Posts</span>
+                <span>Publicaciones</span>
               </div>
               <div>
                 <strong>{subforums.length}</strong>
-                <span>Subforums</span>
+                <span>Subforos</span>
               </div>
             </div>
 
             <button className="btn-primary" type="button" onClick={openCreatePost}>
-              Create Post
+              Crear Publicacion
             </button>
           </section>
 
           <section className="panel">
-            <h2>Subforums</h2>
+            <h2>Subforos</h2>
             <div className="subforum-list">
               <button
                 type="button"
@@ -1175,7 +1718,7 @@ export default function App() {
                   setActiveTab("home");
                 }}
               >
-                <span>All subforums</span>
+                <span>Todos los subforos</span>
                 <span>{threads.length}</span>
               </button>
 
@@ -1193,33 +1736,33 @@ export default function App() {
             </div>
 
             <button className="btn-secondary full-width-btn" type="button" onClick={openCreateSubforum}>
-              Create Subforum
+              Crear Subforo
             </button>
           </section>
 
           <section className="panel">
-            <h2>Flairs</h2>
+            <h2>Etiquetas</h2>
             <div className="pill-group">
-              <span className="pill">discussion</span>
-              <span className="pill">help</span>
-              <span className="pill">resource</span>
-              <span className="pill">question</span>
-              <span className="pill">typography</span>
+              <span className="pill">debate</span>
+              <span className="pill">ayuda</span>
+              <span className="pill">recursos</span>
+              <span className="pill">pregunta</span>
+              <span className="pill">tipografia</span>
               <span className="pill">a11y</span>
             </div>
           </section>
 
           <section className="panel">
-            <h2>House Rules</h2>
+            <h2>Reglas de la casa</h2>
             <ol className="rules">
               <li>
-                <strong>Be helpful.</strong> Explain why your answer works.
+                <strong>Se amable.</strong> Explica por que tu respuesta funciona.
               </li>
               <li>
-                <strong>Add context.</strong> Share code and expected behavior.
+                <strong>Agrega contexto.</strong> Comparte codigo y comportamiento esperado.
               </li>
               <li>
-                <strong>Stay on topic.</strong> Keep posts relevant to the community.
+                <strong>Manten el foco.</strong> Publica contenido relevante para la comunidad.
               </li>
             </ol>
           </section>

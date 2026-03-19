@@ -4,10 +4,19 @@
       "id": "a9a14a95-d9b2-4def-8abe-ef29abf762f2",
       "username": "francis",
       "passwordHash": "$2a$10$uc.l.qolIR2Q/lvlZwWvSOxw4lKwFlAyJRW7jozFF8/6HXw.TEiWe",
-      "reputation": 28,
-      "activityScore": 6,
+      "reputation": 52,
+      "activityScore": 15,
       "createdAt": "2026-03-17T21:49:30.732Z",
-      "lastActiveAt": "2026-03-17T22:07:02.982Z"
+      "lastActiveAt": "2026-03-19T21:29:40.789Z"
+    },
+    {
+      "id": "862056dd-b3ef-40ff-8582-2d5e6b71a636",
+      "username": "franciswqeq",
+      "passwordHash": "$2a$10$gmv9Pp9J2AwSE8DaqY7xR.aevAjiwk4Ps7KUcfkSzI/uO/vgBQ6aq",
+      "reputation": 10,
+      "activityScore": 1,
+      "createdAt": "2026-03-18T21:36:43.670Z",
+      "lastActiveAt": "2026-03-18T21:36:43.670Z"
     }
   ],
   "posts": [
@@ -19,23 +28,53 @@
       "subforumId": "clubdelaia-general",
       "authorId": "a9a14a95-d9b2-4def-8abe-ef29abf762f2",
       "score": 1,
-      "comments": 2,
+      "comments": 4,
       "commentItems": [
         {
           "id": "fbd3b51c-df1f-4635-b8ac-a7209d1a0f5d",
           "authorId": "a9a14a95-d9b2-4def-8abe-ef29abf762f2",
           "content": "knkljkjn",
-          "createdAt": "2026-03-17T22:06:59.311Z"
+          "createdAt": "2026-03-17T22:06:59.311Z",
+          "replies": []
         },
         {
           "id": "4bd82cf4-5fec-4bec-b531-e64cd2a071b5",
           "authorId": "a9a14a95-d9b2-4def-8abe-ef29abf762f2",
           "content": "njl",
-          "createdAt": "2026-03-17T22:07:02.980Z"
+          "createdAt": "2026-03-17T22:07:02.980Z",
+          "replies": [
+            {
+              "id": "cdc8bc51-f8cd-47a8-a39b-c3efec77d380",
+              "authorId": "a9a14a95-d9b2-4def-8abe-ef29abf762f2",
+              "content": "onl",
+              "createdAt": "2026-03-19T21:28:58.456Z",
+              "replies": []
+            }
+          ]
+        },
+        {
+          "id": "84db14e2-7f4d-4985-94b8-beb60a97ceaa",
+          "authorId": "a9a14a95-d9b2-4def-8abe-ef29abf762f2",
+          "content": "que pasa aqui",
+          "createdAt": "2026-03-19T21:29:12.510Z",
+          "replies": []
         }
       ],
       "createdAt": "2026-03-17T21:50:01.559Z",
-      "updatedAt": "2026-03-17T22:07:02.982Z"
+      "updatedAt": "2026-03-19T21:29:12.510Z"
+    },
+    {
+      "id": "08ba757e-6711-48bf-8ec5-a0f7e906f3af",
+      "title": "qyekj",
+      "content": "b ,jhjhhjk",
+      "category": "discussion",
+      "subforumId": "clubdelaia-general",
+      "authorId": "a9a14a95-d9b2-4def-8abe-ef29abf762f2",
+      "score": 1,
+      "comments": 0,
+      "commentItems": [],
+      "createdAt": "2026-03-19T21:29:40.788Z",
+      "updatedAt": "2026-03-19T21:29:40.788Z"
     }
   ],
   "subforums": [

@@ -1,3 +1,5 @@
+@import url("https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap");
+
 :root {
   --bg-page: #dae0e6;
   --bg-surface: #ffffff;
@@ -11,6 +13,11 @@
   --link: #0079d3;
   --upvote: #ff4500;
   --downvote: #7193ff;
+  --comment-font: "IBM Plex Sans", "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
+  --comment-mono: "IBM Plex Mono", Consolas, Monaco, "Courier New", monospace;
+  --comment-bg: #f6f7f8;
+  --comment-meta: #878a8c;
+  --comment-line: #edeff1;
 }
 
 * {
@@ -461,68 +468,390 @@ button {
   padding-top: 10px;
 }
 
-.comment-empty {
-  color: var(--text-muted);
-  font-size: 0.82rem;
-  margin-bottom: 8px;
-}
-
-.comments-list {
-  list-style: none;
-  display: grid;
-  gap: 8px;
-  margin-bottom: 8px;
-}
-
-.comment-item {
-  background: var(--bg-muted);
-  border: 1px solid var(--border);
+.reddit-comments {
+  background: var(--comment-bg);
+  border: 1px solid var(--comment-line);
   border-radius: 4px;
-  padding: 8px;
+  padding: 14px;
+  font-family: var(--comment-font);
 }
 
-.comment-meta {
+.rc-post-meta {
   display: flex;
-  gap: 6px;
   align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+  font-size: 12px;
+  color: var(--comment-meta);
+  font-family: var(--comment-mono);
+}
+
+.rc-post-meta span:first-child {
+  color: var(--text-main);
+  font-weight: 500;
+}
+
+.rc-dot {
+  color: var(--comment-meta);
+}
+
+.rc-sort-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 16px;
+  border-bottom: 1px solid var(--comment-line);
+  padding-bottom: 10px;
+  font-size: 12px;
+  color: var(--comment-meta);
+  font-family: var(--comment-mono);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.rc-sort-bar button {
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-family: var(--comment-mono);
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--comment-meta);
+  padding: 2px 6px;
+  border-radius: 2px;
+  transition: color 0.15s, background 0.15s;
+}
+
+.rc-sort-bar button.active,
+.rc-sort-bar button:hover {
+  color: var(--brand);
+  background: rgba(255, 69, 0, 0.08);
+}
+
+.rc-new-comment-area {
+  margin-bottom: 16px;
+}
+
+.rc-new-comment-area textarea {
+  width: 100%;
+  resize: vertical;
+  min-height: 78px;
+  font-family: var(--comment-font);
+  font-size: 13px;
+  background: transparent;
+  border: none;
+  border-bottom: 2px solid var(--comment-line);
+  outline: none;
+  padding: 6px 0;
+  color: var(--text-main);
+  transition: border-color 0.15s;
+  line-height: 1.5;
+}
+
+.rc-new-comment-area textarea:focus {
+  border-bottom-color: var(--link);
+}
+
+.rc-new-comment-area textarea::placeholder {
+  color: var(--comment-meta);
+}
+
+.rc-new-comment-area textarea:disabled {
+  opacity: 0.65;
+  cursor: not-allowed;
+}
+
+.rc-comment-count {
+  font-size: 16px;
+  font-weight: 700;
+  margin-bottom: 12px;
+}
+
+.rc-empty {
   color: var(--text-muted);
-  font-size: 0.75rem;
+  font-size: 0.85rem;
+  margin-bottom: 8px;
+}
+
+.rc-comments-root {
+  width: 100%;
+}
+
+.rc-comment {
+  position: relative;
+  display: flex;
+  gap: 0;
+}
+
+.rc-comments-root > .rc-comment + .rc-comment {
+  border-top: 1px solid var(--comment-line);
+  padding-top: 14px;
+}
+
+.rc-thread-gutter {
+  flex-shrink: 0;
+  width: 28px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  cursor: pointer;
+  padding-top: 2px;
+}
+
+.rc-thread-gutter::after {
+  content: "";
+  flex: 1;
+  width: 2px;
+  background: var(--comment-line);
+  border-radius: 1px;
+  margin-top: 4px;
+  transition: background 0.15s;
+  min-height: 12px;
+}
+
+.rc-thread-gutter:hover::after {
+  background: var(--brand);
+}
+
+.rc-avatar-dot {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  margin-top: 2px;
+}
+
+.rc-comment-inner {
+  flex: 1;
+  padding-bottom: 14px;
+}
+
+.rc-comment-header {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  flex-wrap: wrap;
   margin-bottom: 4px;
 }
 
-.comment-content {
-  font-size: 0.85rem;
+.rc-author {
+  font-weight: 600;
+  font-size: 13px;
+}
+
+.rc-author.op {
+  color: var(--brand);
+}
+
+.rc-flair {
+  font-size: 11px;
+  font-family: var(--comment-mono);
+  color: var(--comment-meta);
+  border: 1px solid #ddd;
+  border-radius: 2px;
+  padding: 1px 5px;
+  line-height: 1.4;
+}
+
+.rc-op-flair {
+  color: var(--brand);
+  border-color: var(--brand);
+}
+
+.rc-time {
+  font-size: 12px;
+  color: var(--comment-meta);
+  font-family: var(--comment-mono);
+}
+
+.rc-collapsed-indicator {
+  display: none;
+  font-size: 11px;
+  font-family: var(--comment-mono);
+  color: var(--comment-meta);
+  margin-left: 4px;
+}
+
+.rc-comment-body {
+  font-size: 14px;
   color: var(--text-main);
-  white-space: pre-wrap;
+  line-height: 1.55;
+  margin-bottom: 6px;
 }
 
-.comment-form {
-  display: grid;
-  gap: 6px;
+.rc-comment-body p + p {
+  margin-top: 8px;
 }
 
-.comment-form textarea {
-  width: 100%;
-  border: 1px solid var(--border);
-  border-radius: 4px;
-  padding: 8px 10px;
-  font-size: 0.86rem;
-  resize: vertical;
-  min-height: 62px;
+.rc-comment-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex-wrap: wrap;
 }
 
-.comment-form .btn-primary {
-  justify-self: end;
+.rc-vote-group {
+  display: flex;
+  align-items: center;
+  margin-right: 6px;
 }
 
-.comment-login-btn {
+.rc-vote-btn {
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 3px 5px;
+  border-radius: 2px;
+  color: var(--comment-meta);
+  font-size: 13px;
+  line-height: 1;
+  transition: color 0.12s, background 0.12s;
+}
+
+.rc-vote-btn:hover,
+.rc-vote-btn.active-up {
+  color: var(--brand);
+  background: rgba(255, 69, 0, 0.08);
+}
+
+.rc-vote-btn.down:hover,
+.rc-vote-btn.active-down {
+  color: var(--downvote);
+  background: rgba(113, 147, 255, 0.12);
+}
+
+.rc-vote-count {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-main);
+  font-family: var(--comment-mono);
+  min-width: 24px;
+  text-align: center;
+}
+
+.rc-act-btn {
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-family: var(--comment-font);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--comment-meta);
+  padding: 3px 6px;
+  border-radius: 2px;
+  transition: color 0.12s, background 0.12s;
+  letter-spacing: 0.02em;
+}
+
+.rc-act-btn:hover {
+  color: var(--text-main);
+  background: rgba(0, 0, 0, 0.03);
+}
+
+.rc-reply-btn:hover {
   color: var(--link);
-  font-size: 0.82rem;
-  font-weight: 700;
 }
 
-.comment-login-btn:hover {
-  text-decoration: underline;
+.rc-replies {
+  margin-top: 4px;
+}
+
+.rc-replies .rc-comment {
+  margin-left: 0;
+}
+
+.rc-reply-form {
+  display: none;
+  margin-top: 10px;
+}
+
+.rc-reply-form.open {
+  display: block;
+}
+
+.rc-reply-form textarea {
+  width: 100%;
+  resize: vertical;
+  min-height: 72px;
+  font-family: var(--comment-font);
+  font-size: 13px;
+  background: transparent;
+  border: none;
+  border-bottom: 2px solid var(--comment-line);
+  outline: none;
+  padding: 6px 0;
+  color: var(--text-main);
+  transition: border-color 0.15s;
+  line-height: 1.5;
+}
+
+.rc-reply-form textarea:focus {
+  border-bottom-color: var(--link);
+}
+
+.rc-reply-form textarea::placeholder {
+  color: var(--comment-meta);
+}
+
+.rc-reply-form-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 8px;
+  justify-content: flex-end;
+}
+
+.rc-btn-cancel {
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-family: var(--comment-font);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--comment-meta);
+  padding: 4px 10px;
+  border-radius: 2px;
+}
+
+.rc-btn-cancel:hover {
+  color: var(--text-main);
+}
+
+.rc-btn-submit {
+  background: var(--link);
+  border: none;
+  cursor: pointer;
+  font-family: var(--comment-font);
+  font-size: 12px;
+  font-weight: 600;
+  color: #fff;
+  padding: 4px 14px;
+  border-radius: 2px;
+  transition: opacity 0.12s;
+}
+
+.rc-btn-submit:hover {
+  opacity: 0.88;
+}
+
+.rc-btn-submit:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.rc-comment.collapsed > .rc-comment-inner .rc-comment-body,
+.rc-comment.collapsed > .rc-comment-inner .rc-comment-actions,
+.rc-comment.collapsed > .rc-comment-inner .rc-replies,
+.rc-comment.collapsed > .rc-comment-inner .rc-reply-form {
+  display: none;
+}
+
+.rc-comment.collapsed .rc-collapsed-indicator {
+  display: inline;
+}
+
+.rc-comment.collapsed > .rc-thread-gutter::after {
+  background: var(--comment-line);
 }
 
 .empty-state {
@@ -779,6 +1108,23 @@ button {
     min-width: 0;
     flex: 1;
     text-align: right;
+  }
+
+  .reddit-comments {
+    padding: 12px;
+  }
+
+  .rc-sort-bar {
+    gap: 6px;
+    flex-wrap: wrap;
+  }
+
+  .rc-thread-gutter {
+    width: 24px;
+  }
+
+  .rc-vote-group {
+    margin-right: 2px;
   }
 
   .modal-actions {

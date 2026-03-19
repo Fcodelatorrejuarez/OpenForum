@@ -47,7 +47,8 @@ Optional environment variables:
 - FRONTEND_ORIGIN (default: http://localhost:5173)
 - JWT_SECRET
   - required in production
-  - in development, if omitted, the server creates an ephemeral secret on startup
+	- in development, if omitted, the server creates and reuses `backend/data/dev-jwt-secret.txt`
+	- this keeps sessions valid across nodemon restarts
   - must be at least 32 characters long if provided
 
 On PowerShell, example:
