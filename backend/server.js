@@ -243,6 +243,14 @@ function validateOptionalCommentParentId(value) {
   return parentCommentId;
 }
 
+function validateVoteDirection(value) {
+  const direction = readTrimmedString(value, "direction");
+  if (direction !== "up" && direction !== "down") {
+    throw new HttpError(400, "direction must be 'up' or 'down'");
+  }
+  return direction;
+}
+
 function parseCookies(headerValue) {
   const header = typeof headerValue === "string" ? headerValue : "";
   return header.split(";").reduce((cookies, part) => {
@@ -324,13 +332,88 @@ function userPublicFields(user) {
 function normalizeComment(comment) {
   const createdAt = isValidIsoDate(comment.createdAt) ? comment.createdAt : new Date().toISOString();
   const sourceReplies = Array.isArray(comment.replies) ? comment.replies : [];
+  const sourceVotes =
+    comment && typeof comment.votesByUserId === "object" && !Array.isArray(comment.votesByUserId)
+      ? comment.votesByUserId
+      : {};
+  const votesByUserId = Object.entries(sourceVotes).reduce((acc, [userId, value]) => {
+    if (value === 1 || value === -1) {
+      acc[userId] = value;
+    }
+    return acc;
+  }, {});
+
+  const voteDelta = Object.values(votesByUserId).reduce((total, value) => total + value, 0);
+  const scoreFromVotes = 1 + voteDelta;
+
   return {
     id: typeof comment.id === "string" ? comment.id : randomUUID(),
     authorId: typeof comment.authorId === "string" ? comment.authorId : "",
     content: typeof comment.content === "string" ? comment.content.trim() : "",
     createdAt,
+    score: scoreFromVotes,
+    votesByUserId,
     replies: sourceReplies.map((reply) => normalizeComment(reply))
   };
+}
+
+function countCommentUpvotes(commentItems, userId) {
+  return commentItems.reduce((total, comment) => {
+    const ownUpvotes =
+      comment.authorId === userId
+        ? Object.values(comment.votesByUserId ?? {}).filter((value) => value === 1).length
+        : 0;
+    return total + ownUpvotes + countCommentUpvotes(Array.isArray(comment.replies) ? comment.replies : [], userId);
+  }, 0);
+}
+
+function applyCommentVote(comment, voterUserId, direction) {
+  if (!comment.votesByUserId || typeof comment.votesByUserId !== "object" || Array.isArray(comment.votesByUserId)) {
+    comment.votesByUserId = {};
+  }
+
+  const previous = comment.votesByUserId[voterUserId] ?? 0;
+  const next = direction === "up" ? (previous === 1 ? 0 : 1) : previous === -1 ? 0 : -1;
+
+  if (next === 0) {
+    delete comment.votesByUserId[voterUserId];
+  } else {
+    comment.votesByUserId[voterUserId] = next;
+  }
+
+  const voteDelta = Object.values(comment.votesByUserId).reduce((total, value) => total + value, 0);
+  comment.score = 1 + voteDelta;
+
+  return next;
+}
+
+function findCommentById(commentItems, commentId) {
+  for (const comment of commentItems) {
+    if (comment.id === commentId) {
+      return comment;
+    }
+
+    const nested = findCommentById(Array.isArray(comment.replies) ? comment.replies : [], commentId);
+    if (nested) {
+      return nested;
+    }
+  }
+
+  return null;
+}
+
+function recalculateUserReputationFromCommentUpvotes(store, userId) {
+  const user = store.users.find((candidate) => candidate.id === userId);
+  if (!user) {
+    return;
+  }
+
+  const upvotes = store.posts.reduce((total, post) => {
+    const commentItems = Array.isArray(post.commentItems) ? post.commentItems : [];
+    return total + countCommentUpvotes(commentItems, userId);
+  }, 0);
+
+  user.reputation = upvotes;
 }
 
 function countCommentsDeep(commentItems) {
@@ -379,7 +462,7 @@ function insertReplyIntoTree(commentItems, parentCommentId, newComment) {
   return { comments, inserted };
 }
 
-function mapCommentForClient(comment, users) {
+function mapCommentForClient(comment, users, viewerUserId = "") {
   const author = users.find((user) => user.id === comment.authorId);
   return {
     id: comment.id,
@@ -388,7 +471,11 @@ function mapCommentForClient(comment, users) {
     authorReputation: author ? author.reputation : 0,
     content: comment.content,
     createdAt: comment.createdAt,
-    replies: Array.isArray(comment.replies) ? comment.replies.map((reply) => mapCommentForClient(reply, users)) : []
+    score: Number.isFinite(comment.score) ? Number(comment.score) : 1,
+    userVote: viewerUserId ? comment.votesByUserId?.[viewerUserId] ?? 0 : 0,
+    replies: Array.isArray(comment.replies)
+      ? comment.replies.map((reply) => mapCommentForClient(reply, users, viewerUserId))
+      : []
   };
 }
 
@@ -525,12 +612,16 @@ function buildNormalizedStore(input) {
     const createdAt = isValidIsoDate(user.createdAt) ? user.createdAt : new Date().toISOString();
     const lastActiveAt = isValidIsoDate(user.lastActiveAt) ? user.lastActiveAt : createdAt;
     const postsCount = postsByAuthor.get(user.id) ?? 0;
+    const commentUpvotes = safePosts.reduce((total, post) => {
+      const commentItems = Array.isArray(post.commentItems) ? post.commentItems : [];
+      return total + countCommentUpvotes(commentItems, user.id);
+    }, 0);
 
     const normalized = {
       id: typeof user.id === "string" ? user.id : randomUUID(),
       username: typeof user.username === "string" ? user.username.trim() : "",
       passwordHash: typeof user.passwordHash === "string" ? user.passwordHash : "",
-      reputation: Number.isFinite(user.reputation) ? Number(user.reputation) : 10 + postsCount * 10,
+      reputation: commentUpvotes,
       activityScore: Number.isFinite(user.activityScore) ? Number(user.activityScore) : postsCount * 2,
       createdAt,
       lastActiveAt
@@ -640,7 +731,6 @@ function touchDailyActivity(user) {
 
   if (today !== last) {
     user.activityScore += 1;
-    user.reputation += 2;
   }
 
   user.lastActiveAt = new Date().toISOString();
@@ -648,13 +738,11 @@ function touchDailyActivity(user) {
 
 function applyPostContribution(user) {
   user.activityScore += 3;
-  user.reputation += 12;
   user.lastActiveAt = new Date().toISOString();
 }
 
 function applyCommentContribution(user) {
   user.activityScore += 2;
-  user.reputation += 4;
   user.lastActiveAt = new Date().toISOString();
 }
 
@@ -941,7 +1029,20 @@ app.get(
     }
 
     const commentItems = Array.isArray(post.commentItems) ? post.commentItems : [];
-    const comments = sortCommentsByDate(commentItems).map((comment) => mapCommentForClient(comment, store.users));
+    let viewerUserId = "";
+    const maybeToken = extractAuthToken(req);
+    if (maybeToken) {
+      try {
+        const payload = jwt.verify(maybeToken, JWT_SECRET);
+        viewerUserId = typeof payload?.userId === "string" ? payload.userId : "";
+      } catch {
+        viewerUserId = "";
+      }
+    }
+
+    const comments = sortCommentsByDate(commentItems).map((comment) =>
+      mapCommentForClient(comment, store.users, viewerUserId)
+    );
 
     return res.json({ comments });
   })
@@ -977,6 +1078,8 @@ app.post(
       authorId: user.id,
       content,
       createdAt: new Date().toISOString(),
+      score: 1,
+      votesByUserId: {},
       replies: []
     };
 
@@ -997,9 +1100,57 @@ app.post(
     await writeStore(store);
 
     return res.status(201).json({
-      comment: mapCommentForClient(comment, store.users),
+      comment: mapCommentForClient(comment, store.users, req.userId),
       comments: post.comments,
       user: userPublicFields(user)
+    });
+  })
+);
+
+app.post(
+  "/api/posts/:postId/comments/:commentId/vote",
+  writeRateLimit,
+  authMiddleware,
+  asyncHandler(async (req, res) => {
+    const postId = readTrimmedString(req.params.postId, "postId");
+    const commentId = readTrimmedString(req.params.commentId, "commentId");
+    const body = requirePlainObject(req.body);
+    const direction = validateVoteDirection(body.direction);
+
+    const store = await readStore();
+    const post = store.posts.find((candidate) => candidate.id === postId);
+    if (!post) {
+      throw new HttpError(404, "Post not found");
+    }
+
+    if (!Array.isArray(post.commentItems)) {
+      post.commentItems = [];
+    }
+
+    const comment = findCommentById(post.commentItems, commentId);
+    if (!comment) {
+      throw new HttpError(404, "Comment not found");
+    }
+
+    applyCommentVote(comment, req.userId, direction);
+    post.updatedAt = new Date().toISOString();
+
+    if (comment.authorId) {
+      recalculateUserReputationFromCommentUpvotes(store, comment.authorId);
+    }
+
+    const voter = store.users.find((candidate) => candidate.id === req.userId);
+    const commentAuthor = store.users.find((candidate) => candidate.id === comment.authorId);
+    if (voter) {
+      voter.lastActiveAt = new Date().toISOString();
+    }
+
+    await writeStore(store);
+
+    return res.json({
+      comment: mapCommentForClient(comment, store.users, req.userId),
+      author: commentAuthor ? userPublicFields(commentAuthor) : null,
+      user: voter ? userPublicFields(voter) : null
     });
   })
 );

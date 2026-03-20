@@ -4,16 +4,16 @@
       "id": "a9a14a95-d9b2-4def-8abe-ef29abf762f2",
       "username": "francis",
       "passwordHash": "$2a$10$uc.l.qolIR2Q/lvlZwWvSOxw4lKwFlAyJRW7jozFF8/6HXw.TEiWe",
-      "reputation": 52,
+      "reputation": 4,
       "activityScore": 15,
       "createdAt": "2026-03-17T21:49:30.732Z",
-      "lastActiveAt": "2026-03-19T21:29:40.789Z"
+      "lastActiveAt": "2026-03-20T20:50:00.746Z"
     },
     {
       "id": "862056dd-b3ef-40ff-8582-2d5e6b71a636",
       "username": "franciswqeq",
       "passwordHash": "$2a$10$gmv9Pp9J2AwSE8DaqY7xR.aevAjiwk4Ps7KUcfkSzI/uO/vgBQ6aq",
-      "reputation": 10,
+      "reputation": 0,
       "activityScore": 1,
       "createdAt": "2026-03-18T21:36:43.670Z",
       "lastActiveAt": "2026-03-18T21:36:43.670Z"
@@ -35,6 +35,10 @@
           "authorId": "a9a14a95-d9b2-4def-8abe-ef29abf762f2",
           "content": "knkljkjn",
           "createdAt": "2026-03-17T22:06:59.311Z",
+          "score": 2,
+          "votesByUserId": {
+            "a9a14a95-d9b2-4def-8abe-ef29abf762f2": 1
+          },
           "replies": []
         },
         {
@@ -42,12 +46,20 @@
           "authorId": "a9a14a95-d9b2-4def-8abe-ef29abf762f2",
           "content": "njl",
           "createdAt": "2026-03-17T22:07:02.980Z",
+          "score": 2,
+          "votesByUserId": {
+            "a9a14a95-d9b2-4def-8abe-ef29abf762f2": 1
+          },
           "replies": [
             {
               "id": "cdc8bc51-f8cd-47a8-a39b-c3efec77d380",
               "authorId": "a9a14a95-d9b2-4def-8abe-ef29abf762f2",
               "content": "onl",
               "createdAt": "2026-03-19T21:28:58.456Z",
+              "score": 2,
+              "votesByUserId": {
+                "a9a14a95-d9b2-4def-8abe-ef29abf762f2": 1
+              },
               "replies": []
             }
           ]
@@ -57,11 +69,15 @@
           "authorId": "a9a14a95-d9b2-4def-8abe-ef29abf762f2",
           "content": "que pasa aqui",
           "createdAt": "2026-03-19T21:29:12.510Z",
+          "score": 2,
+          "votesByUserId": {
+            "a9a14a95-d9b2-4def-8abe-ef29abf762f2": 1
+          },
           "replies": []
         }
       ],
       "createdAt": "2026-03-17T21:50:01.559Z",
-      "updatedAt": "2026-03-19T21:29:12.510Z"
+      "updatedAt": "2026-03-20T20:50:00.746Z"
     },
     {
       "id": "08ba757e-6711-48bf-8ec5-a0f7e906f3af",

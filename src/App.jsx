@@ -218,10 +218,13 @@ function commentTimeAgo(value) {
 function normalizeCommentNode(comment) {
   return {
     id: String(comment?.id ?? makeClientId("comment")),
+    authorId: typeof comment?.authorId === "string" ? comment.authorId : "",
     author: comment?.author ?? "desconocido",
+    authorReputation: Number.isFinite(comment?.authorReputation) ? Number(comment.authorReputation) : 0,
     createdAt: typeof comment?.createdAt === "string" ? comment.createdAt : new Date().toISOString(),
     content: typeof comment?.content === "string" ? comment.content : "",
     score: Number.isFinite(comment?.score) ? Number(comment.score) : 1,
+    userVote: Number.isFinite(comment?.userVote) ? Number(comment.userVote) : 0,
     replies: Array.isArray(comment?.replies) ? comment.replies.map((reply) => normalizeCommentNode(reply)) : []
   };
 }
@@ -290,13 +293,44 @@ function appendReplyToCommentTree(nodes, parentId, replyNode) {
   return { comments, inserted };
 }
 
+function updateCommentInTree(nodes, commentId, transform) {
+  let updated = false;
+
+  const comments = nodes.map((node) => {
+    if (node.id === commentId) {
+      updated = true;
+      return transform(node);
+    }
+
+    if (!node.replies || node.replies.length === 0) {
+      return node;
+    }
+
+    const nested = updateCommentInTree(node.replies, commentId, transform);
+    if (!nested.updated) {
+      return node;
+    }
+
+    updated = true;
+    return {
+      ...node,
+      replies: nested.comments
+    };
+  });
+
+  return { comments, updated };
+}
+
 function createLocalComment(author, content) {
   return {
     id: makeClientId("local"),
+    authorId: "",
     author,
+    authorReputation: 0,
     createdAt: new Date().toISOString(),
     content,
     score: 1,
+    userVote: 0,
     replies: []
   };
 }
@@ -307,7 +341,6 @@ function CommentNode({
   collapsedById,
   replyOpenById,
   replyDraftById,
-  voteByCommentId,
   currentUser,
   onRequireAuth,
   onToggleCollapse,
@@ -320,8 +353,8 @@ function CommentNode({
   const isReplyOpen = Boolean(replyOpenById[comment.id]);
   const isOp = comment.author === postAuthor;
   const accentColor = hashColorForAuthor(comment.author);
-  const voteState = voteByCommentId[comment.id] ?? 0;
-  const visibleScore = comment.score + voteState;
+  const voteState = Number.isFinite(comment.userVote) ? Number(comment.userVote) : 0;
+  const visibleScore = Number.isFinite(comment.score) ? Number(comment.score) : 1;
 
   return (
     <div className={`rc-comment ${isCollapsed ? "collapsed" : ""}`}>
@@ -358,7 +391,7 @@ function CommentNode({
             <button
               type="button"
               className={`rc-vote-btn ${voteState === 1 ? "active-up" : ""}`}
-              onClick={() => onCommentVote(comment.id, "up")}
+              onClick={() => void onCommentVote(comment.id, "up")}
               aria-label="Voto positivo"
             >
               ▲
@@ -367,7 +400,7 @@ function CommentNode({
             <button
               type="button"
               className={`rc-vote-btn down ${voteState === -1 ? "active-down" : ""}`}
-              onClick={() => onCommentVote(comment.id, "down")}
+              onClick={() => void onCommentVote(comment.id, "down")}
               aria-label="Voto negativo"
             >
               ▼
@@ -427,7 +460,6 @@ function CommentNode({
               collapsedById={collapsedById}
               replyOpenById={replyOpenById}
               replyDraftById={replyDraftById}
-              voteByCommentId={voteByCommentId}
               currentUser={currentUser}
               onRequireAuth={onRequireAuth}
               onToggleCollapse={onToggleCollapse}
@@ -454,13 +486,13 @@ function ThreadCommentsSection({
   commentSubmitting,
   currentUser,
   onRequireAuth,
-  onReplySubmit
+  onReplySubmit,
+  onCommentVote
 }) {
   const [sortMode, setSortMode] = useState("popular");
   const [collapsedById, setCollapsedById] = useState({});
   const [replyOpenById, setReplyOpenById] = useState({});
   const [replyDraftById, setReplyDraftById] = useState({});
-  const [voteByCommentId, setVoteByCommentId] = useState({});
 
   const sortedComments = useMemo(() => sortCommentTree(comments, sortMode), [comments, sortMode]);
   const commentCount = useMemo(() => countCommentTree(comments), [comments]);
@@ -478,14 +510,6 @@ function ThreadCommentsSection({
 
   function onReplyDraftChange(commentId, value) {
     setReplyDraftById((current) => ({ ...current, [commentId]: value }));
-  }
-
-  function onCommentVote(commentId, direction) {
-    setVoteByCommentId((current) => {
-      const previous = current[commentId] ?? 0;
-      const next = direction === "up" ? (previous === 1 ? 0 : 1) : previous === -1 ? 0 : -1;
-      return { ...current, [commentId]: next };
-    });
   }
 
   async function submitReply(parentCommentId) {
@@ -567,14 +591,13 @@ function ThreadCommentsSection({
               collapsedById={collapsedById}
               replyOpenById={replyOpenById}
               replyDraftById={replyDraftById}
-              voteByCommentId={voteByCommentId}
               currentUser={currentUser}
               onRequireAuth={onRequireAuth}
               onToggleCollapse={onToggleCollapse}
               onToggleReplyForm={onToggleReplyForm}
               onReplyDraftChange={onReplyDraftChange}
               onReplySubmit={submitReply}
-              onCommentVote={onCommentVote}
+              onCommentVote={(commentId, direction) => onCommentVote(thread.id, commentId, direction)}
             />
           ))}
         </div>
@@ -619,22 +642,12 @@ function ThreadCard({
   onVote,
   isLiked,
   onToggleLike,
-  commentsOpen,
-  onToggleComments,
-  comments,
-  commentsLoading,
-  commentNotice,
-  commentDraft,
-  onCommentDraftChange,
-  onCommentSubmit,
-  commentSubmitting,
-  currentUser,
-  onRequireAuth,
+  onOpenThread,
   onSelectSubforum,
-  onReplySubmit
+  detailMode = false
 }) {
   return (
-    <article className="thread-card">
+    <article className={`thread-card ${detailMode ? "thread-card-detail" : ""}`}>
       <VoteColumn threadId={thread.id} baseScore={thread.score} voteState={voteState} onVote={onVote} />
       <div className="thread-main">
         <div className="thread-meta">
@@ -652,15 +665,23 @@ function ThreadCard({
           <span>{timeAgo(thread.ageHours)}</span>
           <span className={categoryClass[thread.category]}>{categoryLabel[thread.category]}</span>
         </div>
-        <h2 className="thread-title">{thread.title}</h2>
+        <h2 className="thread-title">
+          {detailMode ? (
+            thread.title
+          ) : (
+            <button type="button" className="thread-title-btn" onClick={() => onOpenThread(thread.id)}>
+              {thread.title}
+            </button>
+          )}
+        </h2>
         <p className="thread-snippet">{thread.content}</p>
 
         <div className="thread-actions">
-          <button type="button" onClick={() => onToggleComments(thread.id)}>
+          <button type="button" onClick={() => onOpenThread(thread.id)}>
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor">
               <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path>
             </svg>
-            <span>{thread.comments} Comentarios</span>
+            <span>{detailMode ? "Detalle del hilo" : `${thread.comments} Comentarios`}</span>
           </button>
 
           <button
@@ -675,22 +696,6 @@ function ThreadCard({
             <span>{isLiked ? "Te gusta" : "Me gusta"}</span>
           </button>
         </div>
-
-        {commentsOpen ? (
-          <ThreadCommentsSection
-            thread={thread}
-            comments={comments}
-            commentsLoading={commentsLoading}
-            commentNotice={commentNotice}
-            commentDraft={commentDraft}
-            onCommentDraftChange={onCommentDraftChange}
-            onCommentSubmit={onCommentSubmit}
-            commentSubmitting={commentSubmitting}
-            currentUser={currentUser}
-            onRequireAuth={onRequireAuth}
-            onReplySubmit={onReplySubmit}
-          />
-        ) : null}
       </div>
     </article>
   );
@@ -951,6 +956,15 @@ function NewSubforumModal({ open, onClose, onCreate, creating, error }) {
 }
 
 export default function App() {
+  const [forumTheme, setForumTheme] = useState(() => {
+    try {
+      const saved = localStorage.getItem("clubdelaia_forum_theme");
+      return saved === "dark" ? "dark" : "light";
+    } catch {
+      return "light";
+    }
+  });
+
   const [threads, setThreads] = useState([]);
   const [subforums, setSubforums] = useState([]);
   const [selectedSort, setSelectedSort] = useState("trending");
@@ -974,7 +988,7 @@ export default function App() {
   });
 
   const [commentsByPost, setCommentsByPost] = useState({});
-  const [expandedCommentsByPost, setExpandedCommentsByPost] = useState({});
+  const [activePostId, setActivePostId] = useState(null);
   const [commentDraftByPost, setCommentDraftByPost] = useState({});
   const [commentsLoadingByPost, setCommentsLoadingByPost] = useState({});
   const [commentSubmittingByPost, setCommentSubmittingByPost] = useState({});
@@ -1018,9 +1032,30 @@ export default function App() {
     return sortThreads(filtered, selectedSort);
   }, [activeTab, threads, likedPostIds, query, selectedCategory, selectedSubforumId, selectedSort]);
 
+  const activeThread = useMemo(() => {
+    if (!activePostId) {
+      return null;
+    }
+    return threads.find((thread) => thread.id === activePostId) ?? null;
+  }, [threads, activePostId]);
+
   useEffect(() => {
     localStorage.setItem("clubdelaia_liked_posts", JSON.stringify(likedPostIds));
   }, [likedPostIds]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem("clubdelaia_forum_theme", forumTheme);
+    } catch {
+      // Ignore storage errors and keep in-memory preference.
+    }
+
+    document.body.classList.toggle("theme-dark", forumTheme === "dark");
+
+    return () => {
+      document.body.classList.remove("theme-dark");
+    };
+  }, [forumTheme]);
 
   useEffect(() => {
     async function loadInitialData() {
@@ -1117,6 +1152,7 @@ export default function App() {
   function onSelectSubforum(subforumId) {
     setSelectedSubforumId(subforumId);
     setActiveTab("home");
+    setActivePostId(null);
   }
 
   async function loadComments(postId) {
@@ -1136,14 +1172,15 @@ export default function App() {
     }
   }
 
-  function onToggleComments(postId) {
-    setExpandedCommentsByPost((current) => {
-      const willOpen = !current[postId];
-      if (willOpen && !Object.prototype.hasOwnProperty.call(commentsByPost, postId)) {
-        loadComments(postId);
-      }
-      return { ...current, [postId]: willOpen };
-    });
+  function openPostDetail(postId) {
+    setActivePostId(postId);
+    if (!Object.prototype.hasOwnProperty.call(commentsByPost, postId)) {
+      void loadComments(postId);
+    }
+  }
+
+  function closePostDetail() {
+    setActivePostId(null);
   }
 
   function onCommentDraftChange(postId, value) {
@@ -1360,6 +1397,55 @@ export default function App() {
     }
   }
 
+  async function onCommentVote(postId, commentId, direction) {
+    if (!currentUser) {
+      requireAuth("Inicia sesion para votar comentarios.");
+      return;
+    }
+
+    try {
+      const { response, payload } = await apiFetch(`/posts/${postId}/comments/${commentId}/vote`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({ direction })
+      });
+
+      if (!response.ok) {
+        if (response.status === 401) {
+          setCurrentUser(null);
+          requireAuth("La sesion expiro. Inicia sesion de nuevo.");
+          return;
+        }
+        throw new Error(payload?.error || "No se pudo votar el comentario");
+      }
+
+      const updatedComment = normalizeCommentNode(payload?.comment);
+      setCommentsByPost((current) => {
+        const existing = current[postId] ?? [];
+        const updated = updateCommentInTree(existing, commentId, () => updatedComment);
+        if (!updated.updated) {
+          return current;
+        }
+        return {
+          ...current,
+          [postId]: updated.comments
+        };
+      });
+
+      if (payload?.user) {
+        setCurrentUser(payload.user);
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "No se pudo votar el comentario";
+      setCommentNoticeByPost((current) => ({
+        ...current,
+        [postId]: message
+      }));
+    }
+  }
+
   function openCreatePost() {
     if (!currentUser) {
       requireAuth("Inicia sesion para crear publicaciones.");
@@ -1534,6 +1620,12 @@ export default function App() {
         ? selectedSubforum.description || `Hilos de ${selectedSubforum.name}.`
         : "Hilos simples y practicos sobre IA y desarrollo frontend.";
 
+  const activePostCommentDraft = activeThread ? commentDraftByPost[activeThread.id] ?? "" : "";
+  const activePostComments = activeThread ? commentsByPost[activeThread.id] ?? [] : [];
+  const activePostCommentsLoading = activeThread ? Boolean(commentsLoadingByPost[activeThread.id]) : false;
+  const activePostCommentSubmitting = activeThread ? Boolean(commentSubmittingByPost[activeThread.id]) : false;
+  const activePostCommentNotice = activeThread ? commentNoticeByPost[activeThread.id] ?? "" : "";
+
   return (
     <div className="app">
       <header className="header">
@@ -1547,21 +1639,35 @@ export default function App() {
             <button
               type="button"
               className={`header-link-btn ${activeTab === "home" ? "active" : ""}`}
-              onClick={() => setActiveTab("home")}
+              onClick={() => {
+                setActiveTab("home");
+                setActivePostId(null);
+              }}
             >
               Inicio
             </button>
             <button
               type="button"
               className={`header-link-btn ${activeTab === "liked" ? "active" : ""}`}
-              onClick={() => setActiveTab("liked")}
+              onClick={() => {
+                setActiveTab("liked");
+                setActivePostId(null);
+              }}
             >
-              <span className="heart">❤</span>
+              <span className="heart"></span>
               Me gusta
             </button>
           </nav>
 
           <div className="header-actions">
+            <button
+              type="button"
+              className="btn-secondary theme-toggle-btn"
+              onClick={() => setForumTheme((current) => (current === "dark" ? "light" : "dark"))}
+              aria-label={forumTheme === "dark" ? "Cambiar a tema blanco" : "Cambiar a tema negro"}
+            >
+              {forumTheme === "dark" ? "Foro blanco" : "Foro negro"}
+            </button>
             {currentUser ? (
               <>
                 <span className="username-chip">u/{currentUser.username}</span>
@@ -1583,130 +1689,7 @@ export default function App() {
       </header>
 
       <div className="layout">
-        <main className="main-column">
-          <section className="feed-head">
-            <h1>{feedTitle}</h1>
-            <p>{feedDescription}</p>
-          </section>
-
-          <section className="toolbar" aria-label="Controles del feed">
-            {sortOptions.map((option) => (
-              <button
-                key={option.id}
-                type="button"
-                className={`filter-btn ${selectedSort === option.id ? "active" : ""}`}
-                onClick={() => setSelectedSort(option.id)}
-              >
-                {option.label}
-              </button>
-            ))}
-
-            <div className="category-group">
-              {categoryOptions.map((option) => (
-                <button
-                  key={option.id}
-                  type="button"
-                  className={`category-btn ${selectedCategory === option.id ? "active" : ""}`}
-                  onClick={() => setSelectedCategory(option.id)}
-                >
-                  {option.label}
-                </button>
-              ))}
-            </div>
-
-            <label className="subforum-filter">
-              <span>Subforo</span>
-              <select
-                value={selectedSubforumId}
-                onChange={(event) => {
-                  setSelectedSubforumId(event.target.value);
-                  setActiveTab("home");
-                }}
-              >
-                <option value="all">Todo</option>
-                {subforums.map((subforum) => (
-                  <option key={subforum.id} value={subforum.id}>
-                    r/{subforum.slug}
-                  </option>
-                ))}
-              </select>
-            </label>
-
-            <label className="search-wrap" aria-label="Buscar hilos">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor">
-                <circle cx="11" cy="11" r="7"></circle>
-                <path d="m20 20-3.4-3.4"></path>
-              </svg>
-              <input
-                className="search-input"
-                value={query}
-                onChange={(event) => setQuery(event.target.value)}
-                type="search"
-                placeholder="Buscar por titulo, autor o contenido"
-              />
-            </label>
-          </section>
-
-          <section className="thread-list">
-            {loadingPosts ? <div className="empty-state">Cargando publicaciones...</div> : null}
-
-            {!loadingPosts && visibleThreads.length > 0
-              ? visibleThreads.map((thread) => (
-                  <ThreadCard
-                    key={thread.id}
-                    thread={thread}
-                    voteState={votesByThread[thread.id] ?? 0}
-                    onVote={onVote}
-                    isLiked={likedPostIds.includes(thread.id)}
-                    onToggleLike={onToggleLike}
-                    commentsOpen={Boolean(expandedCommentsByPost[thread.id])}
-                    onToggleComments={onToggleComments}
-                    comments={commentsByPost[thread.id] ?? []}
-                    commentsLoading={Boolean(commentsLoadingByPost[thread.id])}
-                    commentNotice={commentNoticeByPost[thread.id] ?? ""}
-                    commentDraft={commentDraftByPost[thread.id] ?? ""}
-                    onCommentDraftChange={onCommentDraftChange}
-                    onCommentSubmit={onCommentSubmit}
-                    commentSubmitting={Boolean(commentSubmittingByPost[thread.id])}
-                    currentUser={currentUser}
-                    onRequireAuth={() => requireAuth("Inicia sesion para comentar.")}
-                    onSelectSubforum={onSelectSubforum}
-                    onReplySubmit={onReplySubmit}
-                  />
-                ))
-              : null}
-
-            {!loadingPosts && visibleThreads.length === 0 ? (
-              <div className="empty-state">
-                {activeTab === "liked"
-                  ? "Aun no tienes publicaciones con me gusta. Presiona el corazon en alguna publicacion."
-                  : "No hay hilos que coincidan con este filtro y busqueda."}
-              </div>
-            ) : null}
-          </section>
-        </main>
-
-        <aside className="sidebar">
-          <section className="panel">
-            <h2>Sobre la comunidad</h2>
-            <p>Un espacio para preguntar, compartir recursos y debatir temas practicos de codigo e IA.</p>
-
-            <div className="stats">
-              <div>
-                <strong>{threads.length}</strong>
-                <span>Publicaciones</span>
-              </div>
-              <div>
-                <strong>{subforums.length}</strong>
-                <span>Subforos</span>
-              </div>
-            </div>
-
-            <button className="btn-primary" type="button" onClick={openCreatePost}>
-              Crear Publicacion
-            </button>
-          </section>
-
+        <aside className="left-sidebar">
           <section className="panel">
             <h2>Subforos</h2>
             <div className="subforum-list">
@@ -1737,6 +1720,190 @@ export default function App() {
 
             <button className="btn-secondary full-width-btn" type="button" onClick={openCreateSubforum}>
               Crear Subforo
+            </button>
+          </section>
+
+          <section className="panel profile-card">
+            <h2>Tu perfil</h2>
+            {currentUser ? (
+              <>
+                <p className="profile-username">u/{currentUser.username}</p>
+                <div className="stats">
+                  <div>
+                    <strong>{currentUser.reputation}</strong>
+                    <span>Reputacion</span>
+                  </div>
+                  <div>
+                    <strong>{likedPostIds.length}</strong>
+                    <span>Me gusta</span>
+                  </div>
+                </div>
+                <button type="button" className="btn-secondary full-width-btn" onClick={logout}>
+                  Cerrar sesion
+                </button>
+              </>
+            ) : (
+              <>
+                <p>Inicia sesion para ver tu perfil y participar en los subforos.</p>
+                <button type="button" className="btn-primary full-width-btn" onClick={() => openAuthModal("login", "")}>
+                  Iniciar sesion
+                </button>
+              </>
+            )}
+          </section>
+        </aside>
+
+        <main className="main-column">
+          {activeThread ? (
+            <>
+              <section className="post-view-head">
+                <button type="button" className="back-btn" onClick={closePostDetail}>
+                  Volver al feed
+                </button>
+                <p>Viendo hilo en detalle</p>
+              </section>
+
+              <section className="thread-list thread-list-detail">
+                <ThreadCard
+                  thread={activeThread}
+                  voteState={votesByThread[activeThread.id] ?? 0}
+                  onVote={onVote}
+                  isLiked={likedPostIds.includes(activeThread.id)}
+                  onToggleLike={onToggleLike}
+                  onOpenThread={openPostDetail}
+                  onSelectSubforum={onSelectSubforum}
+                  detailMode
+                />
+
+                <ThreadCommentsSection
+                  thread={activeThread}
+                  comments={activePostComments}
+                  commentsLoading={activePostCommentsLoading}
+                  commentNotice={activePostCommentNotice}
+                  commentDraft={activePostCommentDraft}
+                  onCommentDraftChange={onCommentDraftChange}
+                  onCommentSubmit={onCommentSubmit}
+                  commentSubmitting={activePostCommentSubmitting}
+                  currentUser={currentUser}
+                  onRequireAuth={() => requireAuth("Inicia sesion para comentar.")}
+                  onReplySubmit={onReplySubmit}
+                  onCommentVote={onCommentVote}
+                />
+              </section>
+            </>
+          ) : (
+            <>
+              <section className="feed-head">
+                <h1>{feedTitle}</h1>
+                <p>{feedDescription}</p>
+              </section>
+
+              <section className="toolbar" aria-label="Controles del feed">
+                {sortOptions.map((option) => (
+                  <button
+                    key={option.id}
+                    type="button"
+                    className={`filter-btn ${selectedSort === option.id ? "active" : ""}`}
+                    onClick={() => setSelectedSort(option.id)}
+                  >
+                    {option.label}
+                  </button>
+                ))}
+
+                <div className="category-group">
+                  {categoryOptions.map((option) => (
+                    <button
+                      key={option.id}
+                      type="button"
+                      className={`category-btn ${selectedCategory === option.id ? "active" : ""}`}
+                      onClick={() => setSelectedCategory(option.id)}
+                    >
+                      {option.label}
+                    </button>
+                  ))}
+                </div>
+
+                <label className="subforum-filter">
+                  <span>Subforo</span>
+                  <select
+                    value={selectedSubforumId}
+                    onChange={(event) => {
+                      setSelectedSubforumId(event.target.value);
+                      setActiveTab("home");
+                    }}
+                  >
+                    <option value="all">Todo</option>
+                    {subforums.map((subforum) => (
+                      <option key={subforum.id} value={subforum.id}>
+                        r/{subforum.slug}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+
+                <label className="search-wrap" aria-label="Buscar hilos">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor">
+                    <circle cx="11" cy="11" r="7"></circle>
+                    <path d="m20 20-3.4-3.4"></path>
+                  </svg>
+                  <input
+                    className="search-input"
+                    value={query}
+                    onChange={(event) => setQuery(event.target.value)}
+                    type="search"
+                    placeholder="Buscar por titulo, autor o contenido"
+                  />
+                </label>
+              </section>
+
+              <section className="thread-list">
+                {loadingPosts ? <div className="empty-state">Cargando publicaciones...</div> : null}
+
+                {!loadingPosts && visibleThreads.length > 0
+                  ? visibleThreads.map((thread) => (
+                      <ThreadCard
+                        key={thread.id}
+                        thread={thread}
+                        voteState={votesByThread[thread.id] ?? 0}
+                        onVote={onVote}
+                        isLiked={likedPostIds.includes(thread.id)}
+                        onToggleLike={onToggleLike}
+                        onOpenThread={openPostDetail}
+                        onSelectSubforum={onSelectSubforum}
+                      />
+                    ))
+                  : null}
+
+                {!loadingPosts && visibleThreads.length === 0 ? (
+                  <div className="empty-state">
+                    {activeTab === "liked"
+                      ? "Aun no tienes publicaciones con me gusta. Presiona el corazon en alguna publicacion."
+                      : "No hay hilos que coincidan con este filtro y busqueda."}
+                  </div>
+                ) : null}
+              </section>
+            </>
+          )}
+        </main>
+
+        <aside className="sidebar">
+          <section className="panel">
+            <h2>Sobre la comunidad</h2>
+            <p>Un espacio para preguntar, compartir recursos y debatir temas practicos de codigo e IA.</p>
+
+            <div className="stats">
+              <div>
+                <strong>{threads.length}</strong>
+                <span>Publicaciones</span>
+              </div>
+              <div>
+                <strong>{subforums.length}</strong>
+                <span>Subforos</span>
+              </div>
+            </div>
+
+            <button className="btn-primary" type="button" onClick={openCreatePost}>
+              Crear Publicacion
             </button>
           </section>
 
