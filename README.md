@@ -144,8 +144,10 @@ Health check:
 ## Reputation Rules
 
 - New user starts with 10 reputation.
-- First login of each day grants +2 reputation and +1 activity score.
-- Creating a post grants +12 reputation and +3 activity score.
+- Reputation is recalculated from upvotes received on the user's comments.
+- First login of each day grants +1 activity score.
+- Creating a post grants +3 activity score.
+- Creating a comment grants +2 activity score.
 
 ## Future Improvements
 

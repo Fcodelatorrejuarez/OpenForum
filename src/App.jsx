@@ -2,6 +2,8 @@ import { useEffect, useMemo, useState } from "react";
 import { seedThreads } from "./data/seedThreads";
 
 const API_BASE = "http://localhost:4000/api";
+const THEME_STORAGE_KEY = "clubdelaia_forum_theme";
+const LIKED_POSTS_STORAGE_KEY = "clubdelaia_liked_posts";
 const FALLBACK_SUBFORUM_ID = "clubdelaia-general";
 const FALLBACK_SUBFORUM_NAME = "ClubDeLaIA";
 const FALLBACK_SUBFORUM_SLUG = "clubdelaia";
@@ -335,6 +337,19 @@ function createLocalComment(author, content) {
   };
 }
 
+function mergeCommentIntoPostTree(existingComments, parentCommentId, commentNode) {
+  if (!parentCommentId) {
+    return [...existingComments, commentNode];
+  }
+
+  const appended = appendReplyToCommentTree(existingComments, parentCommentId, commentNode);
+  if (appended.inserted) {
+    return appended.comments;
+  }
+
+  return [commentNode, ...existingComments];
+}
+
 function CommentNode({
   comment,
   postAuthor,
@@ -496,6 +511,13 @@ function ThreadCommentsSection({
 
   const sortedComments = useMemo(() => sortCommentTree(comments, sortMode), [comments, sortMode]);
   const commentCount = useMemo(() => countCommentTree(comments), [comments]);
+
+  useEffect(() => {
+    setSortMode("popular");
+    setCollapsedById({});
+    setReplyOpenById({});
+    setReplyDraftById({});
+  }, [thread.id]);
 
   function onToggleCollapse(commentId) {
     setCollapsedById((current) => ({ ...current, [commentId]: !current[commentId] }));
@@ -958,7 +980,7 @@ function NewSubforumModal({ open, onClose, onCreate, creating, error }) {
 export default function App() {
   const [forumTheme, setForumTheme] = useState(() => {
     try {
-      const saved = localStorage.getItem("clubdelaia_forum_theme");
+      const saved = localStorage.getItem(THEME_STORAGE_KEY);
       return saved === "dark" ? "dark" : "light";
     } catch {
       return "light";
@@ -976,7 +998,7 @@ export default function App() {
   const [activeTab, setActiveTab] = useState("home");
   const [likedPostIds, setLikedPostIds] = useState(() => {
     try {
-      const raw = localStorage.getItem("clubdelaia_liked_posts");
+      const raw = localStorage.getItem(LIKED_POSTS_STORAGE_KEY);
       if (!raw) {
         return [];
       }
@@ -1020,9 +1042,9 @@ export default function App() {
   }, [selectedSubforumId, subforums]);
 
   const postCountBySubforum = useMemo(() => {
-    return threads.reduce((current, thread) => {
-      const previous = current[thread.subforumId] ?? 0;
-      return { ...current, [thread.subforumId]: previous + 1 };
+    return threads.reduce((counts, thread) => {
+      counts[thread.subforumId] = (counts[thread.subforumId] ?? 0) + 1;
+      return counts;
     }, {});
   }, [threads]);
 
@@ -1040,12 +1062,12 @@ export default function App() {
   }, [threads, activePostId]);
 
   useEffect(() => {
-    localStorage.setItem("clubdelaia_liked_posts", JSON.stringify(likedPostIds));
+    localStorage.setItem(LIKED_POSTS_STORAGE_KEY, JSON.stringify(likedPostIds));
   }, [likedPostIds]);
 
   useEffect(() => {
     try {
-      localStorage.setItem("clubdelaia_forum_theme", forumTheme);
+      localStorage.setItem(THEME_STORAGE_KEY, forumTheme);
     } catch {
       // Ignore storage errors and keep in-memory preference.
     }
@@ -1212,74 +1234,15 @@ export default function App() {
       return;
     }
 
-    setCommentNoticeByPost((current) => ({ ...current, [postId]: "" }));
+    const created = await submitCommentOrReply(postId, draft, {
+      parentCommentId: "",
+      fallbackNotice: "Comentario guardado localmente. El servidor no pudo guardarlo por ahora.",
+      fallbackErrorPrefix: "Comentario guardado localmente. Error del servidor:",
+      requestErrorMessage: "No se pudo crear el comentario"
+    });
 
-    setCommentSubmittingByPost((current) => ({ ...current, [postId]: true }));
-
-    try {
-      const { response, payload } = await apiFetch(`/posts/${postId}/comments`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json"
-        },
-        body: JSON.stringify({ content: draft })
-      });
-
-      if (!response.ok) {
-        if (response.status === 401) {
-          setCurrentUser(null);
-          requireAuth("La sesion expiro. Inicia sesion de nuevo.");
-          return;
-        }
-
-        // If server cannot persist (fallback data or temporary backend issue), keep UX functional locally.
-        if (response.status === 404 || response.status >= 500) {
-          const localComment = createLocalComment(currentUser.username, draft);
-          setCommentsByPost((current) => ({
-            ...current,
-            [postId]: [...(current[postId] ?? []), localComment]
-          }));
-          increaseThreadCommentCount(postId, 1);
-          setCommentDraftByPost((current) => ({ ...current, [postId]: "" }));
-          setCommentNoticeByPost((current) => ({
-            ...current,
-            [postId]: "Comentario guardado localmente. El servidor no pudo guardarlo por ahora."
-          }));
-          return;
-        }
-
-        throw new Error(payload?.error || "No se pudo crear el comentario");
-      }
-
-      setCommentsByPost((current) => ({
-        ...current,
-        [postId]: [...(current[postId] ?? []), normalizeCommentNode(payload?.comment)]
-      }));
-
-      increaseThreadCommentCount(postId, 1, payload?.comments);
-
+    if (created) {
       setCommentDraftByPost((current) => ({ ...current, [postId]: "" }));
-      setCommentNoticeByPost((current) => ({ ...current, [postId]: "" }));
-
-      if (payload?.user) {
-        setCurrentUser(payload.user);
-      }
-    } catch (error) {
-      const localComment = createLocalComment(currentUser.username, draft);
-      setCommentsByPost((current) => ({
-        ...current,
-        [postId]: [...(current[postId] ?? []), localComment]
-      }));
-      increaseThreadCommentCount(postId, 1);
-      setCommentDraftByPost((current) => ({ ...current, [postId]: "" }));
-
-      const message = error instanceof Error ? error.message : "No se pudo crear el comentario";
-      setCommentNoticeByPost((current) => ({
-        ...current,
-        [postId]: `Comentario guardado localmente. Error del servidor: ${message}`
-      }));
-    } finally {
-      setCommentSubmittingByPost((current) => ({ ...current, [postId]: false }));
     }
   }
 
@@ -1294,8 +1257,23 @@ export default function App() {
       return false;
     }
 
-    setCommentNoticeByPost((current) => ({ ...current, [postId]: "" }));
+    return submitCommentOrReply(postId, draft, {
+      parentCommentId,
+      fallbackNotice: "Respuesta guardada localmente. El servidor no pudo guardarla por ahora.",
+      fallbackErrorPrefix: "Respuesta guardada localmente. Error del servidor:",
+      requestErrorMessage: "No se pudo crear la respuesta"
+    });
+  }
 
+  async function submitCommentOrReply(
+    postId,
+    content,
+    { parentCommentId, fallbackNotice, fallbackErrorPrefix, requestErrorMessage }
+  ) {
+    const isReply = Boolean(parentCommentId);
+    const requestBody = isReply ? { content, parentCommentId } : { content };
+
+    setCommentNoticeByPost((current) => ({ ...current, [postId]: "" }));
     setCommentSubmittingByPost((current) => ({ ...current, [postId]: true }));
 
     try {
@@ -1304,7 +1282,7 @@ export default function App() {
         headers: {
           "Content-Type": "application/json"
         },
-        body: JSON.stringify({ content: draft, parentCommentId })
+        body: JSON.stringify(requestBody)
       });
 
       if (!response.ok) {
@@ -1315,47 +1293,28 @@ export default function App() {
         }
 
         if (response.status === 404 || response.status >= 500) {
-          const localReply = createLocalComment(currentUser.username, draft);
+          const localComment = createLocalComment(currentUser.username, content);
           setCommentsByPost((current) => {
             const existing = current[postId] ?? [];
-            const appended = appendReplyToCommentTree(existing, parentCommentId, localReply);
-            if (!appended.inserted) {
-              return {
-                ...current,
-                [postId]: [localReply, ...existing]
-              };
-            }
-
             return {
               ...current,
-              [postId]: appended.comments
+              [postId]: mergeCommentIntoPostTree(existing, parentCommentId, localComment)
             };
           });
           increaseThreadCommentCount(postId, 1);
-          setCommentNoticeByPost((current) => ({
-            ...current,
-            [postId]: "Respuesta guardada localmente. El servidor no pudo guardarla por ahora."
-          }));
+          setCommentNoticeByPost((current) => ({ ...current, [postId]: fallbackNotice }));
           return true;
         }
 
-        throw new Error(payload?.error || "No se pudo crear la respuesta");
+        throw new Error(payload?.error || requestErrorMessage);
       }
 
-      const replyNode = normalizeCommentNode(payload?.comment);
+      const createdComment = normalizeCommentNode(payload?.comment);
       setCommentsByPost((current) => {
         const existing = current[postId] ?? [];
-        const appended = appendReplyToCommentTree(existing, parentCommentId, replyNode);
-        if (!appended.inserted) {
-          return {
-            ...current,
-            [postId]: [replyNode, ...existing]
-          };
-        }
-
         return {
           ...current,
-          [postId]: appended.comments
+          [postId]: mergeCommentIntoPostTree(existing, parentCommentId, createdComment)
         };
       });
 
@@ -1368,28 +1327,20 @@ export default function App() {
 
       return true;
     } catch (error) {
-      const localReply = createLocalComment(currentUser.username, draft);
+      const localComment = createLocalComment(currentUser.username, content);
       setCommentsByPost((current) => {
         const existing = current[postId] ?? [];
-        const appended = appendReplyToCommentTree(existing, parentCommentId, localReply);
-        if (!appended.inserted) {
-          return {
-            ...current,
-            [postId]: [localReply, ...existing]
-          };
-        }
-
         return {
           ...current,
-          [postId]: appended.comments
+          [postId]: mergeCommentIntoPostTree(existing, parentCommentId, localComment)
         };
       });
       increaseThreadCommentCount(postId, 1);
 
-      const message = error instanceof Error ? error.message : "No se pudo crear la respuesta";
+      const message = error instanceof Error ? error.message : requestErrorMessage;
       setCommentNoticeByPost((current) => ({
         ...current,
-        [postId]: `Respuesta guardada localmente. Error del servidor: ${message}`
+        [postId]: `${fallbackErrorPrefix} ${message}`
       }));
       return true;
     } finally {
@@ -1615,10 +1566,10 @@ export default function App() {
 
   const feedDescription =
     activeTab === "liked"
-      ? "Publicaciones que marcaste con corazon."
+      ? "Publicaciones marcadas con me gusta."
       : selectedSubforum
         ? selectedSubforum.description || `Hilos de ${selectedSubforum.name}.`
-        : "Hilos simples y practicos sobre IA y desarrollo frontend.";
+        : "Posts generales relacionados con IA.";
 
   const activePostCommentDraft = activeThread ? commentDraftByPost[activeThread.id] ?? "" : "";
   const activePostComments = activeThread ? commentsByPost[activeThread.id] ?? [] : [];
@@ -1666,7 +1617,7 @@ export default function App() {
               onClick={() => setForumTheme((current) => (current === "dark" ? "light" : "dark"))}
               aria-label={forumTheme === "dark" ? "Cambiar a tema blanco" : "Cambiar a tema negro"}
             >
-              {forumTheme === "dark" ? "Foro blanco" : "Foro negro"}
+              {forumTheme === "dark" ? "Claro" : "Oscuro"}
             </button>
             {currentUser ? (
               <>
@@ -1913,9 +1864,6 @@ export default function App() {
               <span className="pill">debate</span>
               <span className="pill">ayuda</span>
               <span className="pill">recursos</span>
-              <span className="pill">pregunta</span>
-              <span className="pill">tipografia</span>
-              <span className="pill">a11y</span>
             </div>
           </section>
 
