@@ -3,7 +3,6 @@ import { seedThreads } from "./data/seedThreads";
 
 const API_BASE = "http://localhost:4000/api";
 const THEME_STORAGE_KEY = "clubdelaia_forum_theme";
-const LIKED_POSTS_STORAGE_KEY = "clubdelaia_liked_posts";
 const FALLBACK_SUBFORUM_ID = "clubdelaia-general";
 const FALLBACK_SUBFORUM_NAME = "ClubDeLaIA";
 const FALLBACK_SUBFORUM_SLUG = "clubdelaia";
@@ -40,6 +39,30 @@ const commentSortOptions = [
 ];
 
 const commentAccentColors = ["#ff4500", "#0079d3", "#46d160", "#ffb000", "#ea0027", "#7193ff", "#ff585b", "#25b79f"];
+
+function normalizePath(path) {
+  if (!path || path === "/") {
+    return "/";
+  }
+  return path.endsWith("/") ? path.slice(0, -1) : path;
+}
+
+function getCurrentPath() {
+  if (typeof window === "undefined") {
+    return "/";
+  }
+  return normalizePath(window.location.pathname || "/");
+}
+
+function slugFromPath(path) {
+  const match = path.match(/^\/r\/([^/]+)$/);
+  return match ? decodeURIComponent(match[1]) : "";
+}
+
+function postIdFromPath(path) {
+  const match = path.match(/^\/post\/([^/]+)$/);
+  return match ? decodeURIComponent(match[1]) : "";
+}
 
 function makeClientId(prefix = "c") {
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
@@ -105,10 +128,15 @@ function mapApiPostToThread(post) {
   return {
     id: post.id,
     category: post.category,
-    score: post.score,
+    score: Number.isFinite(post.score) ? Number(post.score) : 1,
+    userVote: Number.isFinite(post.userVote) ? Number(post.userVote) : 0,
+    isPinned: Boolean(post.isPinned),
+    pinnedAt: typeof post.pinnedAt === "string" ? post.pinnedAt : "",
+    canPin: Boolean(post.canPin),
     ageHours: toHoursAgo(post.createdAt),
     title: post.title,
     author: post.author,
+    authorId: post.authorId ?? "",
     content: post.content,
     comments: post.comments ?? 0,
     subforumId: post.subforumId ?? FALLBACK_SUBFORUM_ID,
@@ -120,6 +148,11 @@ function mapApiPostToThread(post) {
 function mapSeedThreadToThread(thread) {
   return {
     ...thread,
+    userVote: 0,
+    authorId: thread.authorId ?? "",
+    isPinned: false,
+    pinnedAt: "",
+    canPin: false,
     subforumId: thread.subforumId ?? FALLBACK_SUBFORUM_ID,
     subforumName: thread.subforumName ?? FALLBACK_SUBFORUM_NAME,
     subforumSlug: thread.subforumSlug ?? FALLBACK_SUBFORUM_SLUG
@@ -127,18 +160,65 @@ function mapSeedThreadToThread(thread) {
 }
 
 function sortThreads(items, selectedSort) {
-  const list = [...items];
-  if (selectedSort === "newest") {
-    return list.sort((a, b) => a.ageHours - b.ageHours);
+  const pinned = items.filter((thread) => thread.isPinned);
+  const regular = items.filter((thread) => !thread.isPinned);
+  const sortByPinnedDate = (a, b) => new Date(b.pinnedAt || 0).getTime() - new Date(a.pinnedAt || 0).getTime();
+
+  const sortSlice = (list) => {
+    if (selectedSort === "newest") {
+      return [...list].sort((a, b) => a.ageHours - b.ageHours);
+    }
+    if (selectedSort === "top") {
+      return [...list].sort((a, b) => b.score - a.score);
+    }
+    return [...list].sort((a, b) => {
+      const trendA = a.score * 0.7 + (24 - a.ageHours) * 0.3;
+      const trendB = b.score * 0.7 + (24 - b.ageHours) * 0.3;
+      return trendB - trendA;
+    });
+  };
+
+  const sortedPinned = sortSlice(pinned).sort(sortByPinnedDate);
+  const sortedRegular = sortSlice(regular);
+  return [...sortedPinned, ...sortedRegular];
+}
+
+function normalizeNotification(item) {
+  return {
+    id: String(item?.id ?? makeClientId("notif")),
+    type: typeof item?.type === "string" ? item.type : "activity",
+    message: typeof item?.message === "string" ? item.message : "Nueva actividad",
+    actorId: typeof item?.actorId === "string" ? item.actorId : "",
+    actorUsername: typeof item?.actorUsername === "string" ? item.actorUsername : "desconocido",
+    postId: typeof item?.postId === "string" ? item.postId : "",
+    commentId: typeof item?.commentId === "string" ? item.commentId : "",
+    createdAt: typeof item?.createdAt === "string" ? item.createdAt : new Date().toISOString(),
+    readAt: typeof item?.readAt === "string" ? item.readAt : ""
+  };
+}
+
+function normalizeNotifications(items) {
+  return Array.isArray(items) ? items.map((item) => normalizeNotification(item)) : [];
+}
+
+function notificationTimeLabel(value) {
+  const ts = new Date(value).getTime();
+  if (Number.isNaN(ts)) {
+    return "ahora";
   }
-  if (selectedSort === "top") {
-    return list.sort((a, b) => b.score - a.score);
+  const diffMin = Math.max(0, Math.floor((Date.now() - ts) / 60000));
+  if (diffMin < 1) {
+    return "ahora";
   }
-  return list.sort((a, b) => {
-    const trendA = a.score * 0.7 + (24 - a.ageHours) * 0.3;
-    const trendB = b.score * 0.7 + (24 - b.ageHours) * 0.3;
-    return trendB - trendA;
-  });
+  if (diffMin < 60) {
+    return `${diffMin}m`;
+  }
+  const h = Math.floor(diffMin / 60);
+  if (h < 24) {
+    return `${h}h`;
+  }
+  const d = Math.floor(h / 24);
+  return `${d}d`;
 }
 
 function filterThreads(items, query, category, subforumId) {
@@ -628,13 +708,11 @@ function ThreadCommentsSection({
   );
 }
 
-function VoteColumn({ threadId, baseScore, voteState, onVote }) {
-  const score = baseScore + voteState;
-
+function VoteColumn({ threadId, score, userVote, onVote }) {
   return (
     <div className="votes">
       <button
-        className={`vote-btn upvote ${voteState === 1 ? "active" : ""}`}
+        className={`vote-btn upvote ${userVote === 1 ? "active" : ""}`}
         type="button"
         aria-label="Voto positivo"
         onClick={() => onVote(threadId, "up")}
@@ -645,7 +723,7 @@ function VoteColumn({ threadId, baseScore, voteState, onVote }) {
       </button>
       <span className="score">{score}</span>
       <button
-        className={`vote-btn downvote ${voteState === -1 ? "active" : ""}`}
+        className={`vote-btn downvote ${userVote === -1 ? "active" : ""}`}
         type="button"
         aria-label="Voto negativo"
         onClick={() => onVote(threadId, "down")}
@@ -660,17 +738,29 @@ function VoteColumn({ threadId, baseScore, voteState, onVote }) {
 
 function ThreadCard({
   thread,
-  voteState,
   onVote,
   isLiked,
   onToggleLike,
   onOpenThread,
   onSelectSubforum,
-  detailMode = false
+  detailMode = false,
+  canDelete = false,
+  deleting = false,
+  onDelete,
+  canReport = false,
+  reporting = false,
+  onReport,
+  canBlockAuthor = false,
+  isAuthorBlocked = false,
+  blockingAuthor = false,
+  onToggleBlockAuthor,
+  canPin = false,
+  pinning = false,
+  onTogglePin
 }) {
   return (
     <article className={`thread-card ${detailMode ? "thread-card-detail" : ""}`}>
-      <VoteColumn threadId={thread.id} baseScore={thread.score} voteState={voteState} onVote={onVote} />
+      <VoteColumn threadId={thread.id} score={thread.score} userVote={thread.userVote ?? 0} onVote={onVote} />
       <div className="thread-main">
         <div className="thread-meta">
           <button
@@ -685,6 +775,7 @@ function ThreadCard({
           <span>Publicado por u/{thread.author}</span>
           <span>•</span>
           <span>{timeAgo(thread.ageHours)}</span>
+          {thread.isPinned ? <span className="pin-badge">Fijado</span> : null}
           <span className={categoryClass[thread.category]}>{categoryLabel[thread.category]}</span>
         </div>
         <h2 className="thread-title">
@@ -717,9 +808,106 @@ function ThreadCard({
             </svg>
             <span>{isLiked ? "Te gusta" : "Me gusta"}</span>
           </button>
+
+          {canDelete ? (
+            <button type="button" className="danger-btn" onClick={() => onDelete(thread.id)} disabled={deleting}>
+              {deleting ? "Eliminando..." : "Eliminar"}
+            </button>
+          ) : null}
+
+          {canPin ? (
+            <button type="button" onClick={() => onTogglePin(thread.id, !thread.isPinned)} disabled={pinning}>
+              {pinning ? "Guardando..." : thread.isPinned ? "Desfijar" : "Fijar"}
+            </button>
+          ) : null}
+
+          {canReport ? (
+            <button type="button" onClick={() => onReport(thread.id)} disabled={reporting}>
+              {reporting ? "Reportando..." : "Reportar"}
+            </button>
+          ) : null}
+
+          {canBlockAuthor ? (
+            <button type="button" onClick={() => onToggleBlockAuthor(thread.authorId)} disabled={blockingAuthor}>
+              {blockingAuthor ? "Actualizando..." : isAuthorBlocked ? "Desbloquear autor" : "Bloquear autor"}
+            </button>
+          ) : null}
         </div>
       </div>
     </article>
+  );
+}
+
+function NotificationsModal({
+  open,
+  onClose,
+  notifications,
+  loading,
+  error,
+  onRefresh,
+  onMarkRead,
+  onMarkAllRead,
+  markAllLoading,
+  busyById
+}) {
+  if (!open) {
+    return null;
+  }
+
+  return (
+    <div className="modal-overlay" role="dialog" aria-modal="true" aria-label="Notificaciones">
+      <div className="modal notifications-modal">
+        <div className="notifications-head">
+          <h2>Notificaciones</h2>
+          <div className="notifications-head-actions">
+            <button type="button" className="btn-secondary" onClick={onRefresh} disabled={loading}>
+              Actualizar
+            </button>
+            <button type="button" className="btn-secondary" onClick={onMarkAllRead} disabled={markAllLoading}>
+              {markAllLoading ? "Marcando..." : "Marcar todo leido"}
+            </button>
+          </div>
+        </div>
+
+        {error ? <p className="auth-error">{error}</p> : null}
+        {loading ? <p className="rc-empty">Cargando notificaciones...</p> : null}
+
+        {!loading && notifications.length === 0 ? <p className="rc-empty">No tienes notificaciones.</p> : null}
+
+        {!loading && notifications.length > 0 ? (
+          <div className="notifications-list">
+            {notifications.map((item) => (
+              <article key={item.id} className={`notification-item ${item.readAt ? "read" : "unread"}`}>
+                <div className="notification-main">
+                  <p className="notification-message">{item.message}</p>
+                  <p className="notification-meta">
+                    <span>u/{item.actorUsername}</span>
+                    <span>•</span>
+                    <span>{notificationTimeLabel(item.createdAt)}</span>
+                  </p>
+                </div>
+                {!item.readAt ? (
+                  <button
+                    type="button"
+                    className="btn-secondary"
+                    onClick={() => onMarkRead(item.id)}
+                    disabled={Boolean(busyById[item.id])}
+                  >
+                    {busyById[item.id] ? "..." : "Leido"}
+                  </button>
+                ) : null}
+              </article>
+            ))}
+          </div>
+        ) : null}
+
+        <div className="modal-actions">
+          <button type="button" className="btn-primary" onClick={onClose}>
+            Cerrar
+          </button>
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -993,21 +1181,20 @@ export default function App() {
   const [selectedCategory, setSelectedCategory] = useState("all");
   const [selectedSubforumId, setSelectedSubforumId] = useState("all");
   const [query, setQuery] = useState("");
-  const [votesByThread, setVotesByThread] = useState({});
 
   const [activeTab, setActiveTab] = useState("home");
-  const [likedPostIds, setLikedPostIds] = useState(() => {
-    try {
-      const raw = localStorage.getItem(LIKED_POSTS_STORAGE_KEY);
-      if (!raw) {
-        return [];
-      }
-      const parsed = JSON.parse(raw);
-      return Array.isArray(parsed) ? parsed : [];
-    } catch {
-      return [];
-    }
-  });
+  const [routePath, setRoutePath] = useState(() => getCurrentPath());
+  const [likedPostIds, setLikedPostIds] = useState([]);
+  const [leaderboardUsers, setLeaderboardUsers] = useState([]);
+  const [leaderboardLoading, setLeaderboardLoading] = useState(false);
+  const [leaderboardError, setLeaderboardError] = useState("");
+  const [notifications, setNotifications] = useState([]);
+  const [unreadNotifications, setUnreadNotifications] = useState(0);
+  const [notificationsLoading, setNotificationsLoading] = useState(false);
+  const [notificationsError, setNotificationsError] = useState("");
+  const [isNotificationsOpen, setIsNotificationsOpen] = useState(false);
+  const [notificationBusyById, setNotificationBusyById] = useState({});
+  const [markingAllNotifications, setMarkingAllNotifications] = useState(false);
 
   const [commentsByPost, setCommentsByPost] = useState({});
   const [activePostId, setActivePostId] = useState(null);
@@ -1026,6 +1213,11 @@ export default function App() {
   const [createPostError, setCreatePostError] = useState("");
   const [creatingSubforum, setCreatingSubforum] = useState(false);
   const [subforumError, setSubforumError] = useState("");
+  const [deletePostError, setDeletePostError] = useState("");
+  const [moderationNotice, setModerationNotice] = useState("");
+  const [moderationBusyByPost, setModerationBusyByPost] = useState({});
+  const [blockBusyByUser, setBlockBusyByUser] = useState({});
+  const [deletingPostId, setDeletingPostId] = useState("");
   const [loadingPosts, setLoadingPosts] = useState(true);
 
   const [currentUser, setCurrentUser] = useState(null);
@@ -1061,9 +1253,82 @@ export default function App() {
     return threads.find((thread) => thread.id === activePostId) ?? null;
   }, [threads, activePostId]);
 
-  useEffect(() => {
-    localStorage.setItem(LIKED_POSTS_STORAGE_KEY, JSON.stringify(likedPostIds));
-  }, [likedPostIds]);
+  async function loadFeedData(options = {}) {
+    const showLoading = options.showLoading !== false;
+
+    if (showLoading) {
+      setLoadingPosts(true);
+    }
+
+    try {
+      const [{ response: postsResponse, payload: postsPayload }, { response: subforumsResponse, payload: subforumsPayload }] =
+        await Promise.all([apiFetch("/posts"), apiFetch("/subforums")]);
+
+      if (!postsResponse.ok) {
+        throw new Error(postsPayload?.error || "No se pudieron cargar las publicaciones");
+      }
+      if (!subforumsResponse.ok) {
+        throw new Error(subforumsPayload?.error || "No se pudieron cargar los subforos");
+      }
+
+      const mappedPosts = Array.isArray(postsPayload?.posts) ? postsPayload.posts.map(mapApiPostToThread) : [];
+      const mappedSubforums = Array.isArray(subforumsPayload?.subforums)
+        ? subforumsPayload.subforums.map(mapApiSubforumToClient)
+        : [];
+
+      setThreads(mappedPosts);
+      setSubforums(
+        mappedSubforums.length > 0
+          ? mappedSubforums.sort((a, b) => a.slug.localeCompare(b.slug))
+          : getFallbackSubforums(mappedPosts.length)
+      );
+    } catch {
+      const fallbackThreads = seedThreads.map(mapSeedThreadToThread);
+      setThreads(fallbackThreads);
+      setSubforums(getFallbackSubforums(fallbackThreads.length));
+    } finally {
+      if (showLoading) {
+        setLoadingPosts(false);
+      }
+    }
+  }
+
+  async function loadNotifications(options = {}) {
+    if (!currentUser) {
+      setNotifications([]);
+      setUnreadNotifications(0);
+      return;
+    }
+
+    const silent = Boolean(options.silent);
+    if (!silent) {
+      setNotificationsLoading(true);
+      setNotificationsError("");
+    }
+
+    try {
+      const { response, payload } = await apiFetch("/notifications");
+      if (!response.ok) {
+        if (response.status === 401) {
+          setCurrentUser(null);
+          return;
+        }
+        throw new Error(payload?.error || "No se pudieron cargar las notificaciones");
+      }
+
+      const items = normalizeNotifications(payload?.notifications);
+      setNotifications(items);
+      setUnreadNotifications(Number.isFinite(payload?.unreadCount) ? Number(payload.unreadCount) : 0);
+    } catch (error) {
+      if (!silent) {
+        setNotificationsError(error instanceof Error ? error.message : "No se pudieron cargar las notificaciones");
+      }
+    } finally {
+      if (!silent) {
+        setNotificationsLoading(false);
+      }
+    }
+  }
 
   useEffect(() => {
     try {
@@ -1080,40 +1345,7 @@ export default function App() {
   }, [forumTheme]);
 
   useEffect(() => {
-    async function loadInitialData() {
-      setLoadingPosts(true);
-      try {
-        const [{ response: postsResponse, payload: postsPayload }, { response: subforumsResponse, payload: subforumsPayload }] =
-          await Promise.all([apiFetch("/posts"), apiFetch("/subforums")]);
-
-        if (!postsResponse.ok) {
-          throw new Error(postsPayload?.error || "No se pudieron cargar las publicaciones");
-        }
-        if (!subforumsResponse.ok) {
-          throw new Error(subforumsPayload?.error || "No se pudieron cargar los subforos");
-        }
-
-        const mappedPosts = Array.isArray(postsPayload?.posts) ? postsPayload.posts.map(mapApiPostToThread) : [];
-        const mappedSubforums = Array.isArray(subforumsPayload?.subforums)
-          ? subforumsPayload.subforums.map(mapApiSubforumToClient)
-          : [];
-
-        setThreads(mappedPosts);
-        setSubforums(
-          mappedSubforums.length > 0
-            ? mappedSubforums.sort((a, b) => a.slug.localeCompare(b.slug))
-            : getFallbackSubforums(mappedPosts.length)
-        );
-      } catch {
-        const fallbackThreads = seedThreads.map(mapSeedThreadToThread);
-        setThreads(fallbackThreads);
-        setSubforums(getFallbackSubforums(fallbackThreads.length));
-      } finally {
-        setLoadingPosts(false);
-      }
-    }
-
-    loadInitialData();
+    void loadFeedData({ showLoading: true });
   }, []);
 
   useEffect(() => {
@@ -1135,6 +1367,31 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    if (!currentUser) {
+      setNotifications([]);
+      setUnreadNotifications(0);
+      return;
+    }
+
+    void loadNotifications();
+
+    const intervalId = window.setInterval(() => {
+      void loadNotifications({ silent: true });
+    }, 30000);
+
+    return () => window.clearInterval(intervalId);
+  }, [currentUser?.id]);
+
+  useEffect(() => {
+    function onPopState() {
+      setRoutePath(getCurrentPath());
+    }
+
+    window.addEventListener("popstate", onPopState);
+    return () => window.removeEventListener("popstate", onPopState);
+  }, []);
+
+  useEffect(() => {
     if (selectedSubforumId === "all") {
       return;
     }
@@ -1143,6 +1400,73 @@ export default function App() {
       setSelectedSubforumId("all");
     }
   }, [selectedSubforumId, subforums]);
+
+  useEffect(() => {
+    if (currentUser && Array.isArray(currentUser.favoritePostIds)) {
+      setLikedPostIds(currentUser.favoritePostIds);
+      return;
+    }
+    setLikedPostIds([]);
+  }, [currentUser]);
+
+  useEffect(() => {
+    void loadFeedData({ showLoading: false });
+  }, [currentUser?.id]);
+
+  useEffect(() => {
+    const path = normalizePath(routePath);
+
+    if (path === "/liked") {
+      setActiveTab("liked");
+      setActivePostId(null);
+      return;
+    }
+
+    if (path === "/leaderboard") {
+      setActiveTab("leaderboard");
+      setActivePostId(null);
+      return;
+    }
+
+    const postId = postIdFromPath(path);
+    if (postId) {
+      setActiveTab("home");
+      setActivePostId(postId);
+      const thread = threads.find((candidate) => candidate.id === postId);
+      if (thread) {
+        setSelectedSubforumId(thread.subforumId);
+      }
+      if (!Object.prototype.hasOwnProperty.call(commentsByPost, postId)) {
+        void loadComments(postId);
+      }
+      return;
+    }
+
+    const subforumSlug = slugFromPath(path);
+    if (subforumSlug) {
+      const found = subforums.find((subforum) => subforum.slug === subforumSlug);
+      setActiveTab("home");
+      setActivePostId(null);
+      setSelectedSubforumId(found ? found.id : "all");
+      return;
+    }
+
+    setActiveTab("home");
+    setActivePostId(null);
+    setSelectedSubforumId("all");
+  }, [routePath, subforums, threads, commentsByPost]);
+
+  useEffect(() => {
+    if (activeTab !== "leaderboard") {
+      return;
+    }
+
+    if (leaderboardUsers.length > 0 || leaderboardLoading) {
+      return;
+    }
+
+    void loadLeaderboard();
+  }, [activeTab, leaderboardUsers.length, leaderboardLoading]);
 
   function openAuthModal(mode, errorMessage = "") {
     setAuthMode(mode);
@@ -1154,27 +1478,305 @@ export default function App() {
     openAuthModal("login", message);
   }
 
-  function onVote(threadId, direction) {
-    setVotesByThread((current) => {
-      const previous = current[threadId] ?? 0;
-      const next = direction === "up" ? (previous === 1 ? 0 : 1) : previous === -1 ? 0 : -1;
-      return { ...current, [threadId]: next };
-    });
+  function pathForSubforumId(subforumId) {
+    if (subforumId === "all") {
+      return "/";
+    }
+    const subforum = subforums.find((candidate) => candidate.id === subforumId);
+    if (!subforum) {
+      return "/";
+    }
+    return `/r/${encodeURIComponent(subforum.slug)}`;
   }
 
-  function onToggleLike(threadId) {
-    setLikedPostIds((current) => {
-      if (current.includes(threadId)) {
-        return current.filter((id) => id !== threadId);
+  function navigateToPath(path, options = {}) {
+    const next = normalizePath(path);
+    const replace = Boolean(options.replace);
+
+    if (next !== getCurrentPath()) {
+      if (replace) {
+        window.history.replaceState({}, "", next);
+      } else {
+        window.history.pushState({}, "", next);
       }
-      return [...current, threadId];
-    });
+    }
+
+    setRoutePath(next);
+  }
+
+  function mergeThreadUpdate(updatedThread) {
+    setThreads((current) => current.map((thread) => (thread.id === updatedThread.id ? updatedThread : thread)));
+  }
+
+  async function loadLeaderboard() {
+    setLeaderboardLoading(true);
+    setLeaderboardError("");
+
+    try {
+      const { response, payload } = await apiFetch("/users/leaderboard");
+      if (!response.ok) {
+        throw new Error(payload?.error || "No se pudo cargar el leaderboard");
+      }
+      const users = Array.isArray(payload?.users) ? payload.users : [];
+      setLeaderboardUsers(users);
+    } catch (error) {
+      setLeaderboardError(error instanceof Error ? error.message : "No se pudo cargar el leaderboard");
+    } finally {
+      setLeaderboardLoading(false);
+    }
+  }
+
+  async function onMarkNotificationRead(notificationId) {
+    if (!currentUser) {
+      return;
+    }
+
+    setNotificationBusyById((current) => ({ ...current, [notificationId]: true }));
+
+    try {
+      const { response, payload } = await apiFetch(`/notifications/${notificationId}/read`, {
+        method: "POST"
+      });
+
+      if (!response.ok) {
+        throw new Error(payload?.error || "No se pudo marcar la notificacion");
+      }
+
+      const now = new Date().toISOString();
+      setNotifications((current) =>
+        current.map((item) => (item.id === notificationId ? { ...item, readAt: item.readAt || now } : item))
+      );
+      setUnreadNotifications((current) => Math.max(0, current - 1));
+    } catch (error) {
+      setNotificationsError(error instanceof Error ? error.message : "No se pudo marcar la notificacion");
+    } finally {
+      setNotificationBusyById((current) => ({ ...current, [notificationId]: false }));
+    }
+  }
+
+  async function onMarkAllNotificationsRead() {
+    if (!currentUser) {
+      return;
+    }
+
+    setMarkingAllNotifications(true);
+    setNotificationsError("");
+
+    try {
+      const { response, payload } = await apiFetch("/notifications/read-all", {
+        method: "POST"
+      });
+      if (!response.ok) {
+        throw new Error(payload?.error || "No se pudieron marcar las notificaciones");
+      }
+
+      const now = new Date().toISOString();
+      setNotifications((current) => current.map((item) => (item.readAt ? item : { ...item, readAt: now })));
+      setUnreadNotifications(0);
+    } catch (error) {
+      setNotificationsError(error instanceof Error ? error.message : "No se pudieron marcar las notificaciones");
+    } finally {
+      setMarkingAllNotifications(false);
+    }
+  }
+
+  async function onReportThread(postId) {
+    if (!currentUser) {
+      requireAuth("Inicia sesion para reportar publicaciones.");
+      return;
+    }
+
+    const rawReason = window.prompt("Motivo del reporte (opcional):", "");
+    if (rawReason == null) {
+      return;
+    }
+
+    setModerationBusyByPost((current) => ({ ...current, [postId]: true }));
+    setModerationNotice("");
+
+    try {
+      const { response, payload } = await apiFetch(`/posts/${postId}/report`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({ reason: rawReason })
+      });
+
+      if (!response.ok) {
+        if (response.status === 401) {
+          setCurrentUser(null);
+          requireAuth("La sesion expiro. Inicia sesion de nuevo.");
+          return;
+        }
+        throw new Error(payload?.error || "No se pudo reportar la publicacion");
+      }
+
+      setModerationNotice("Reporte enviado correctamente.");
+    } catch (error) {
+      setModerationNotice(error instanceof Error ? error.message : "No se pudo reportar la publicacion");
+    } finally {
+      setModerationBusyByPost((current) => ({ ...current, [postId]: false }));
+    }
+  }
+
+  async function onTogglePinThread(postId, nextPinned) {
+    if (!currentUser) {
+      requireAuth("Inicia sesion para fijar publicaciones.");
+      return;
+    }
+
+    setModerationBusyByPost((current) => ({ ...current, [postId]: true }));
+    setModerationNotice("");
+
+    try {
+      const { response, payload } = await apiFetch(`/posts/${postId}/pin`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({ pinned: nextPinned })
+      });
+
+      if (!response.ok) {
+        if (response.status === 401) {
+          setCurrentUser(null);
+          requireAuth("La sesion expiro. Inicia sesion de nuevo.");
+          return;
+        }
+        throw new Error(payload?.error || "No se pudo actualizar el estado fijado");
+      }
+
+      if (payload?.post) {
+        mergeThreadUpdate(mapApiPostToThread(payload.post));
+      }
+      setModerationNotice(nextPinned ? "Publicacion fijada." : "Publicacion desfijada.");
+    } catch (error) {
+      setModerationNotice(error instanceof Error ? error.message : "No se pudo actualizar el estado fijado");
+    } finally {
+      setModerationBusyByPost((current) => ({ ...current, [postId]: false }));
+    }
+  }
+
+  async function onToggleBlockAuthor(authorId) {
+    if (!currentUser) {
+      requireAuth("Inicia sesion para bloquear usuarios.");
+      return;
+    }
+
+    if (!authorId || authorId === currentUser.id) {
+      return;
+    }
+
+    setBlockBusyByUser((current) => ({ ...current, [authorId]: true }));
+    setModerationNotice("");
+
+    try {
+      const { response, payload } = await apiFetch(`/users/${authorId}/block`, {
+        method: "POST"
+      });
+
+      if (!response.ok) {
+        if (response.status === 401) {
+          setCurrentUser(null);
+          requireAuth("La sesion expiro. Inicia sesion de nuevo.");
+          return;
+        }
+        throw new Error(payload?.error || "No se pudo actualizar el bloqueo");
+      }
+
+      if (payload?.user) {
+        setCurrentUser(payload.user);
+      }
+
+      await loadFeedData({ showLoading: false });
+      if (activePostId) {
+        void loadComments(activePostId);
+      }
+      if (payload?.blocked && activeThread?.authorId === authorId) {
+        navigateToPath(pathForSubforumId(selectedSubforumId));
+      }
+      setModerationNotice(payload?.blocked ? "Usuario bloqueado." : "Usuario desbloqueado.");
+    } catch (error) {
+      setModerationNotice(error instanceof Error ? error.message : "No se pudo actualizar el bloqueo");
+    } finally {
+      setBlockBusyByUser((current) => ({ ...current, [authorId]: false }));
+    }
+  }
+
+  async function onVote(threadId, direction) {
+    if (!currentUser) {
+      requireAuth("Inicia sesion para votar publicaciones.");
+      return;
+    }
+
+    setDeletePostError("");
+
+    try {
+      const { response, payload } = await apiFetch(`/posts/${threadId}/vote`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({ direction })
+      });
+
+      if (!response.ok) {
+        if (response.status === 401) {
+          setCurrentUser(null);
+          requireAuth("La sesion expiro. Inicia sesion de nuevo.");
+          return;
+        }
+        throw new Error(payload?.error || "No se pudo votar la publicacion");
+      }
+
+      if (payload?.post) {
+        mergeThreadUpdate(mapApiPostToThread(payload.post));
+      }
+      if (payload?.user) {
+        setCurrentUser(payload.user);
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "No se pudo votar la publicacion";
+      setDeletePostError(message);
+    }
+  }
+
+  async function onToggleLike(threadId) {
+    if (!currentUser) {
+      requireAuth("Inicia sesion para guardar favoritos.");
+      return;
+    }
+
+    setDeletePostError("");
+
+    try {
+      const { response, payload } = await apiFetch(`/posts/${threadId}/favorite`, {
+        method: "POST"
+      });
+
+      if (!response.ok) {
+        if (response.status === 401) {
+          setCurrentUser(null);
+          requireAuth("La sesion expiro. Inicia sesion de nuevo.");
+          return;
+        }
+        throw new Error(payload?.error || "No se pudo actualizar favoritos");
+      }
+
+      const favoritePostIds = Array.isArray(payload?.favoritePostIds) ? payload.favoritePostIds : [];
+      setLikedPostIds(favoritePostIds);
+      if (payload?.user) {
+        setCurrentUser(payload.user);
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "No se pudo actualizar favoritos";
+      setDeletePostError(message);
+    }
   }
 
   function onSelectSubforum(subforumId) {
-    setSelectedSubforumId(subforumId);
-    setActiveTab("home");
-    setActivePostId(null);
+    navigateToPath(pathForSubforumId(subforumId));
   }
 
   async function loadComments(postId) {
@@ -1195,14 +1797,11 @@ export default function App() {
   }
 
   function openPostDetail(postId) {
-    setActivePostId(postId);
-    if (!Object.prototype.hasOwnProperty.call(commentsByPost, postId)) {
-      void loadComments(postId);
-    }
+    navigateToPath(`/post/${encodeURIComponent(postId)}`);
   }
 
   function closePostDetail() {
-    setActivePostId(null);
+    navigateToPath(pathForSubforumId(selectedSubforumId));
   }
 
   function onCommentDraftChange(postId, value) {
@@ -1397,6 +1996,54 @@ export default function App() {
     }
   }
 
+  async function onDeleteThread(postId) {
+    if (!currentUser) {
+      requireAuth("Inicia sesion para borrar publicaciones.");
+      return;
+    }
+
+    const confirmed = window.confirm("Quieres eliminar esta publicacion?");
+    if (!confirmed) {
+      return;
+    }
+
+    setDeletingPostId(postId);
+    setDeletePostError("");
+    setModerationNotice("");
+
+    try {
+      const { response, payload } = await apiFetch(`/posts/${postId}`, {
+        method: "DELETE"
+      });
+
+      if (!response.ok) {
+        if (response.status === 401) {
+          setCurrentUser(null);
+          requireAuth("La sesion expiro. Inicia sesion de nuevo.");
+          return;
+        }
+        throw new Error(payload?.error || "No se pudo eliminar la publicacion");
+      }
+
+      setThreads((current) => current.filter((thread) => thread.id !== postId));
+      setCommentsByPost((current) => {
+        const next = { ...current };
+        delete next[postId];
+        return next;
+      });
+      setLikedPostIds((current) => current.filter((id) => id !== postId));
+
+      if (activePostId === postId) {
+        navigateToPath(pathForSubforumId(selectedSubforumId));
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "No se pudo eliminar la publicacion";
+      setDeletePostError(message);
+    } finally {
+      setDeletingPostId("");
+    }
+  }
+
   function openCreatePost() {
     if (!currentUser) {
       requireAuth("Inicia sesion para crear publicaciones.");
@@ -1408,6 +2055,8 @@ export default function App() {
     }
 
     setCreatePostError("");
+    setDeletePostError("");
+    setModerationNotice("");
     setIsPostModalOpen(true);
   }
 
@@ -1418,6 +2067,8 @@ export default function App() {
     }
 
     setSubforumError("");
+    setDeletePostError("");
+    setModerationNotice("");
     setIsSubforumModalOpen(true);
   }
 
@@ -1458,7 +2109,7 @@ export default function App() {
       setSelectedCategory("all");
       setSelectedSubforumId(mappedPost.subforumId);
       setQuery("");
-      setActiveTab("home");
+      navigateToPath(pathForSubforumId(mappedPost.subforumId));
       return true;
     } catch (error) {
       const message = error instanceof Error ? error.message : "No se pudo crear la publicacion";
@@ -1500,8 +2151,7 @@ export default function App() {
       setSubforums((current) =>
         [...current, mappedSubforum].sort((a, b) => a.slug.localeCompare(b.slug))
       );
-      setSelectedSubforumId(mappedSubforum.id);
-      setActiveTab("home");
+      navigateToPath(pathForSubforumId(mappedSubforum.id));
       return true;
     } catch (error) {
       const message = error instanceof Error ? error.message : "No se pudo crear el subforo";
@@ -1555,11 +2205,17 @@ export default function App() {
     }
 
     setCurrentUser(null);
+    setLikedPostIds([]);
+    setNotifications([]);
+    setUnreadNotifications(0);
+    navigateToPath("/");
   }
 
   const feedTitle =
     activeTab === "liked"
       ? "Tus publicaciones con me gusta"
+      : activeTab === "leaderboard"
+        ? "Leaderboard"
       : selectedSubforum
         ? `r/${selectedSubforum.slug}`
         : "Todos los subforos";
@@ -1567,6 +2223,8 @@ export default function App() {
   const feedDescription =
     activeTab === "liked"
       ? "Publicaciones marcadas con me gusta."
+      : activeTab === "leaderboard"
+        ? "Ranking de usuarios por reputacion."
       : selectedSubforum
         ? selectedSubforum.description || `Hilos de ${selectedSubforum.name}.`
         : "Posts generales relacionados con IA.";
@@ -1581,7 +2239,14 @@ export default function App() {
     <div className="app">
       <header className="header">
         <div className="header-inner">
-          <a href="#" className="brand">
+          <a
+            href="/"
+            className="brand"
+            onClick={(event) => {
+              event.preventDefault();
+              navigateToPath("/");
+            }}
+          >
             <span className="brand-icon" aria-hidden="true"></span>
             <span>ClubDeLaIA</span>
           </a>
@@ -1590,23 +2255,24 @@ export default function App() {
             <button
               type="button"
               className={`header-link-btn ${activeTab === "home" ? "active" : ""}`}
-              onClick={() => {
-                setActiveTab("home");
-                setActivePostId(null);
-              }}
+              onClick={() => navigateToPath(pathForSubforumId(selectedSubforumId))}
             >
               Inicio
             </button>
             <button
               type="button"
               className={`header-link-btn ${activeTab === "liked" ? "active" : ""}`}
-              onClick={() => {
-                setActiveTab("liked");
-                setActivePostId(null);
-              }}
+              onClick={() => navigateToPath("/liked")}
             >
               <span className="heart"></span>
               Me gusta
+            </button>
+            <button
+              type="button"
+              className={`header-link-btn ${activeTab === "leaderboard" ? "active" : ""}`}
+              onClick={() => navigateToPath("/leaderboard")}
+            >
+              Leaderboard
             </button>
           </nav>
 
@@ -1623,6 +2289,10 @@ export default function App() {
               <>
                 <span className="username-chip">u/{currentUser.username}</span>
                 <span className="username-chip">Rep: {currentUser.reputation}</span>
+                <button type="button" className="btn-secondary notif-btn" onClick={() => setIsNotificationsOpen(true)}>
+                  Notificaciones
+                  {unreadNotifications > 0 ? <span className="notif-badge">{unreadNotifications}</span> : null}
+                </button>
                 <button type="button" className="btn-secondary" onClick={logout}>
                   Cerrar sesion
                 </button>
@@ -1647,10 +2317,7 @@ export default function App() {
               <button
                 type="button"
                 className={`subforum-btn ${selectedSubforumId === "all" ? "active" : ""}`}
-                onClick={() => {
-                  setSelectedSubforumId("all");
-                  setActiveTab("home");
-                }}
+                onClick={() => navigateToPath("/")}
               >
                 <span>Todos los subforos</span>
                 <span>{threads.length}</span>
@@ -1714,15 +2381,30 @@ export default function App() {
                 <p>Viendo hilo en detalle</p>
               </section>
 
+              {deletePostError ? <div className="empty-state danger-state">{deletePostError}</div> : null}
+              {moderationNotice ? <div className="empty-state">{moderationNotice}</div> : null}
+
               <section className="thread-list thread-list-detail">
                 <ThreadCard
                   thread={activeThread}
-                  voteState={votesByThread[activeThread.id] ?? 0}
                   onVote={onVote}
                   isLiked={likedPostIds.includes(activeThread.id)}
                   onToggleLike={onToggleLike}
                   onOpenThread={openPostDetail}
                   onSelectSubforum={onSelectSubforum}
+                  canDelete={Boolean(currentUser && activeThread.authorId === currentUser.id)}
+                  deleting={deletingPostId === activeThread.id}
+                  onDelete={onDeleteThread}
+                  canReport={Boolean(currentUser && activeThread.authorId !== currentUser.id)}
+                  reporting={Boolean(moderationBusyByPost[activeThread.id])}
+                  onReport={onReportThread}
+                  canBlockAuthor={Boolean(currentUser && activeThread.authorId && activeThread.authorId !== currentUser.id)}
+                  isAuthorBlocked={Boolean(currentUser?.blockedUserIds?.includes(activeThread.authorId))}
+                  blockingAuthor={Boolean(blockBusyByUser[activeThread.authorId])}
+                  onToggleBlockAuthor={onToggleBlockAuthor}
+                  canPin={Boolean(currentUser && activeThread.canPin)}
+                  pinning={Boolean(moderationBusyByPost[activeThread.id])}
+                  onTogglePin={onTogglePinThread}
                   detailMode
                 />
 
@@ -1749,7 +2431,11 @@ export default function App() {
                 <p>{feedDescription}</p>
               </section>
 
-              <section className="toolbar" aria-label="Controles del feed">
+              {deletePostError ? <div className="empty-state danger-state">{deletePostError}</div> : null}
+              {moderationNotice ? <div className="empty-state">{moderationNotice}</div> : null}
+
+              {activeTab !== "leaderboard" ? (
+                <section className="toolbar" aria-label="Controles del feed">
                 {sortOptions.map((option) => (
                   <button
                     key={option.id}
@@ -1779,8 +2465,7 @@ export default function App() {
                   <select
                     value={selectedSubforumId}
                     onChange={(event) => {
-                      setSelectedSubforumId(event.target.value);
-                      setActiveTab("home");
+                      navigateToPath(pathForSubforumId(event.target.value));
                     }}
                   >
                     <option value="all">Todo</option>
@@ -1805,34 +2490,71 @@ export default function App() {
                     placeholder="Buscar por titulo, autor o contenido"
                   />
                 </label>
-              </section>
+                </section>
+              ) : null}
 
-              <section className="thread-list">
-                {loadingPosts ? <div className="empty-state">Cargando publicaciones...</div> : null}
+              {activeTab === "leaderboard" ? (
+                <section className="thread-list">
+                  {leaderboardLoading ? <div className="empty-state">Cargando leaderboard...</div> : null}
+                  {!leaderboardLoading && leaderboardError ? <div className="empty-state danger-state">{leaderboardError}</div> : null}
+                  {!leaderboardLoading && !leaderboardError && leaderboardUsers.length === 0 ? (
+                    <div className="empty-state">Aun no hay usuarios para mostrar.</div>
+                  ) : null}
+                  {!leaderboardLoading && !leaderboardError && leaderboardUsers.length > 0 ? (
+                    <div className="leaderboard-list">
+                      {leaderboardUsers.map((user, index) => (
+                        <article key={user.id} className="leaderboard-row">
+                          <span className="leaderboard-rank">#{index + 1}</span>
+                          <div className="leaderboard-main">
+                            <strong>u/{user.username}</strong>
+                            <span>Actividad: {user.activityScore}</span>
+                          </div>
+                          <span className="leaderboard-rep">{user.reputation} rep</span>
+                        </article>
+                      ))}
+                    </div>
+                  ) : null}
+                </section>
+              ) : (
+                <section className="thread-list">
+                  {loadingPosts ? <div className="empty-state">Cargando publicaciones...</div> : null}
 
-                {!loadingPosts && visibleThreads.length > 0
-                  ? visibleThreads.map((thread) => (
-                      <ThreadCard
-                        key={thread.id}
-                        thread={thread}
-                        voteState={votesByThread[thread.id] ?? 0}
-                        onVote={onVote}
-                        isLiked={likedPostIds.includes(thread.id)}
-                        onToggleLike={onToggleLike}
-                        onOpenThread={openPostDetail}
-                        onSelectSubforum={onSelectSubforum}
-                      />
-                    ))
-                  : null}
+                  {!loadingPosts && visibleThreads.length > 0
+                    ? visibleThreads.map((thread) => (
+                        <ThreadCard
+                          key={thread.id}
+                          thread={thread}
+                          onVote={onVote}
+                          isLiked={likedPostIds.includes(thread.id)}
+                          onToggleLike={onToggleLike}
+                          onOpenThread={openPostDetail}
+                          onSelectSubforum={onSelectSubforum}
+                          canDelete={Boolean(currentUser && thread.authorId === currentUser.id)}
+                          deleting={deletingPostId === thread.id}
+                          onDelete={onDeleteThread}
+                          canReport={Boolean(currentUser && thread.authorId !== currentUser.id)}
+                          reporting={Boolean(moderationBusyByPost[thread.id])}
+                          onReport={onReportThread}
+                          canBlockAuthor={Boolean(currentUser && thread.authorId && thread.authorId !== currentUser.id)}
+                          isAuthorBlocked={Boolean(currentUser?.blockedUserIds?.includes(thread.authorId))}
+                          blockingAuthor={Boolean(blockBusyByUser[thread.authorId])}
+                          onToggleBlockAuthor={onToggleBlockAuthor}
+                          canPin={Boolean(currentUser && thread.canPin)}
+                          pinning={Boolean(moderationBusyByPost[thread.id])}
+                          onTogglePin={onTogglePinThread}
+                        />
+                      ))
+                    : null}
 
-                {!loadingPosts && visibleThreads.length === 0 ? (
-                  <div className="empty-state">
-                    {activeTab === "liked"
-                      ? "Aun no tienes publicaciones con me gusta. Presiona el corazon en alguna publicacion."
-                      : "No hay hilos que coincidan con este filtro y busqueda."}
-                  </div>
-                ) : null}
-              </section>
+                  {!loadingPosts && visibleThreads.length === 0 ? (
+                    <div className="empty-state">
+                      {activeTab === "liked"
+                        ? "Aun no tienes publicaciones con me gusta. Presiona el corazon en alguna publicacion."
+                        : "No hay hilos que coincidan con este filtro y busqueda."}
+                    </div>
+                  ) : null}
+                </section>
+              )}
             </>
           )}
         </main>
@@ -1922,6 +2644,19 @@ export default function App() {
         onSubmit={onAuthSubmit}
         loading={authLoading}
         error={authError}
+      />
+
+      <NotificationsModal
+        open={isNotificationsOpen}
+        onClose={() => setIsNotificationsOpen(false)}
+        notifications={notifications}
+        loading={notificationsLoading}
+        error={notificationsError}
+        onRefresh={() => void loadNotifications()}
+        onMarkRead={onMarkNotificationRead}
+        onMarkAllRead={onMarkAllNotificationsRead}
+        markAllLoading={markingAllNotifications}
+        busyById={notificationBusyById}
       />
     </div>
   );

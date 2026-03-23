@@ -7,8 +7,13 @@ ClubDeLaIA is a full-stack forum app with:
 - JWT-based authentication with HttpOnly cookie sessions
 - Subforums (reddit-like niches) with creation and browsing
 - Post system (list/create/delete own post)
+- Persistent post voting (upvote/downvote with toggle)
+- Persistent favorites ("Me gusta") linked to user account
+- Notifications for replies and @mentions
+- Basic moderation tools (report, pin post, block user)
 - Reputation system based on user activity
 - Backend validation and basic rate limiting for auth/write actions
+- Leaderboard view and shareable frontend routes
 
 ## Project Structure
 
@@ -83,6 +88,11 @@ Authentication:
 	- public
 	- returns: users sorted by reputation
 
+- POST /users/:id/block
+	- protected
+	- toggles block/unblock for target user
+	- returns: { blocked, blockedUserIds, user }
+
 Subforums:
 
 - GET /subforums
@@ -108,6 +118,33 @@ Posts:
 	- category: discussion | resource | help
 	- returns: { post, user }
 
+- POST /posts/:id/vote
+	- protected
+	- uses the session cookie
+	- body: { direction }
+	- direction: up | down
+	- returns: { post, user }
+
+- POST /posts/:id/favorite
+	- protected
+	- uses the session cookie
+	- toggles favorite status for current user
+	- returns: { favorited, favoritePostIds, user }
+
+- POST /posts/:id/report
+	- protected
+	- uses the session cookie
+	- body: { reason? }
+	- creates moderation report for the post
+	- returns: { report }
+
+- POST /posts/:id/pin
+	- protected
+	- uses the session cookie
+	- body: { pinned }
+	- only subforum creator can pin/unpin
+	- returns: { post }
+
 - GET /posts/:id/comments
 	- public
 	- returns: comments for a post
@@ -126,6 +163,20 @@ Health check:
 
 - GET /health
 
+Notifications:
+
+- GET /notifications
+	- protected
+	- returns: { notifications, unreadCount }
+
+- POST /notifications/:id/read
+	- protected
+	- marks one notification as read
+
+- POST /notifications/read-all
+	- protected
+	- marks all user notifications as read
+
 ## Frontend Notes
 
 - If backend is available, the app loads posts from the API.
@@ -133,6 +184,15 @@ Health check:
 - Creating posts requires authentication.
 - Auth state is restored from the HttpOnly session cookie instead of localStorage.
 - Header shows current logged user reputation.
+- Notifications dropdown/modal is available for logged users.
+- Posts from blocked users are hidden from your feed and comment view.
+- Pinned posts are shown first in the feed.
+- Shareable routes are supported:
+	- `/`
+	- `/r/:slug`
+	- `/post/:id`
+	- `/liked`
+	- `/leaderboard`
 
 ## Security Notes
 
@@ -144,7 +204,9 @@ Health check:
 ## Reputation Rules
 
 - New user starts with 10 reputation.
-- Reputation is recalculated from upvotes received on the user's comments.
+- Reputation is recalculated from upvotes received on:
+	- the user's comments
+	- the user's posts (excluding self-upvotes)
 - First login of each day grants +1 activity score.
 - Creating a post grants +3 activity score.
 - Creating a comment grants +2 activity score.
@@ -153,5 +215,5 @@ Health check:
 
 - Refresh tokens and CSRF protection for stricter session hardening
 - Persistent database (PostgreSQL / MongoDB)
-- Post comments and voting persistence
+- Moderator dashboard for handling reports
 - Input validation library (zod or joi)

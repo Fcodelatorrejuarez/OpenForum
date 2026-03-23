@@ -19,6 +19,7 @@ const IS_PRODUCTION = process.env.NODE_ENV === "production";
 const FRONTEND_ORIGIN = process.env.FRONTEND_ORIGIN ?? "http://localhost:5173";
 const AUTH_COOKIE_NAME = "clubdelaia_session";
 const TOKEN_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+const BASE_REPUTATION = 10;
 const ALLOWED_POST_CATEGORIES = ["discussion", "resource", "help"];
 const DEFAULT_SUBFORUM = {
   id: "clubdelaia-general",
@@ -251,6 +252,26 @@ function validateVoteDirection(value) {
   return direction;
 }
 
+function validatePinnedFlag(value) {
+  if (typeof value !== "boolean") {
+    throw new HttpError(400, "pinned must be a boolean");
+  }
+  return value;
+}
+
+function validateReportReason(value) {
+  if (value == null || value === "") {
+    return "";
+  }
+
+  const reason = readString(value, "reason").trim();
+  if (reason.length > 240) {
+    throw new HttpError(400, "reason must have at most 240 characters");
+  }
+
+  return reason;
+}
+
 function parseCookies(headerValue) {
   const header = typeof headerValue === "string" ? headerValue : "";
   return header.split(";").reduce((cookies, part) => {
@@ -318,14 +339,517 @@ const writeRateLimit = createRateLimiter({
   message: "Too many write actions. Slow down and try again shortly."
 });
 
-function userPublicFields(user) {
-  return {
+function userPublicFields(user, options = {}) {
+  const includePrivate = Boolean(options.includePrivate);
+  const base = {
     id: user.id,
     username: user.username,
     reputation: user.reputation,
     activityScore: user.activityScore,
     createdAt: user.createdAt,
     lastActiveAt: user.lastActiveAt
+  };
+
+  if (includePrivate) {
+    base.favoritePostIds = Array.isArray(user.favoritePostIds) ? user.favoritePostIds : [];
+    base.blockedUserIds = Array.isArray(user.blockedUserIds) ? user.blockedUserIds : [];
+  }
+
+  return base;
+}
+
+function normalizeVotesByUserId(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return {};
+  }
+
+  return Object.entries(value).reduce((acc, [userId, voteValue]) => {
+    if (voteValue === 1 || voteValue === -1) {
+      acc[userId] = voteValue;
+    }
+    return acc;
+  }, {});
+}
+
+function parseViewerUserId(req) {
+  const maybeToken = extractAuthToken(req);
+  if (!maybeToken) {
+    return "";
+  }
+
+  try {
+    const payload = jwt.verify(maybeToken, JWT_SECRET);
+    return typeof payload?.userId === "string" ? payload.userId : "";
+  } catch {
+    return "";
+  }
+}
+
+function getBlockedUserIdSet(store, viewerUserId) {
+  if (!viewerUserId) {
+    return new Set();
+  }
+  const viewer = store.users.find((candidate) => candidate.id === viewerUserId);
+  if (!viewer) {
+    return new Set();
+  }
+  return new Set(Array.isArray(viewer.blockedUserIds) ? viewer.blockedUserIds : []);
+}
+
+function sanitizeBlockedUserIds(value, validUserIds) {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  const unique = new Set();
+  for (const userId of value) {
+    if (typeof userId !== "string") {
+      continue;
+    }
+    if (!validUserIds.has(userId)) {
+      continue;
+    }
+    unique.add(userId);
+  }
+
+  return [...unique];
+}
+
+function isSubforumModerator(subforum, userId) {
+  return Boolean(subforum && userId && subforum.createdBy === userId);
+}
+
+function extractMentions(text) {
+  if (typeof text !== "string") {
+    return [];
+  }
+
+  const mentions = new Set();
+  const pattern = /(^|[^A-Za-z0-9_])@([A-Za-z0-9_]{3,24})/g;
+  let match = pattern.exec(text);
+
+  while (match) {
+    mentions.add(match[2].toLowerCase());
+    match = pattern.exec(text);
+  }
+
+  return [...mentions];
+}
+
+function queueNotification(store, input) {
+  const userId = typeof input?.userId === "string" ? input.userId : "";
+  const actorUserId = typeof input?.actorUserId === "string" ? input.actorUserId : "";
+  if (!userId || !actorUserId || userId === actorUserId) {
+    return null;
+  }
+
+  const userExists = store.users.some((user) => user.id === userId);
+  if (!userExists) {
+    return null;
+  }
+
+  const notification = {
+    id: randomUUID(),
+    userId,
+    actorUserId,
+    type: typeof input?.type === "string" ? input.type : "activity",
+    postId: typeof input?.postId === "string" ? input.postId : "",
+    commentId: typeof input?.commentId === "string" ? input.commentId : "",
+    message: typeof input?.message === "string" ? input.message : "Nueva actividad",
+    createdAt: new Date().toISOString(),
+    readAt: ""
+  };
+
+  if (!Array.isArray(store.notifications)) {
+    store.notifications = [];
+  }
+  store.notifications.push(notification);
+  return notification;
+}
+
+function normalizeNotification(notification) {
+  const createdAt = isValidIsoDate(notification?.createdAt) ? notification.createdAt : new Date().toISOString();
+  const readAt = isValidIsoDate(notification?.readAt) ? notification.readAt : "";
+  return {
+    id: typeof notification?.id === "string" ? notification.id : randomUUID(),
+    userId: typeof notification?.userId === "string" ? notification.userId : "",
+    actorUserId: typeof notification?.actorUserId === "string" ? notification.actorUserId : "",
+    type: typeof notification?.type === "string" ? notification.type : "activity",
+    postId: typeof notification?.postId === "string" ? notification.postId : "",
+    commentId: typeof notification?.commentId === "string" ? notification.commentId : "",
+    message: typeof notification?.message === "string" ? notification.message.trim() : "",
+    createdAt,
+    readAt
+  };
+}
+
+function normalizeReport(report) {
+  const createdAt = isValidIsoDate(report?.createdAt) ? report.createdAt : new Date().toISOString();
+  const targetType = report?.targetType === "post" || report?.targetType === "comment" ? report.targetType : "post";
+  const status = report?.status === "resolved" ? "resolved" : "open";
+  return {
+    id: typeof report?.id === "string" ? report.id : randomUUID(),
+    targetType,
+    targetId: typeof report?.targetId === "string" ? report.targetId : "",
+    postId: typeof report?.postId === "string" ? report.postId : "",
+    reportedBy: typeof report?.reportedBy === "string" ? report.reportedBy : "",
+    reason: typeof report?.reason === "string" ? report.reason.trim() : "",
+    status,
+    createdAt
+  };
+}
+
+function createCommentNotifications(store, params) {
+  const { actor, post, comment, parentCommentId, content } = params;
+  const actorId = actor?.id ?? "";
+  const actorName = actor?.username ?? "usuario";
+  if (!actorId || !post || !comment) {
+    return;
+  }
+
+  const recipients = new Set();
+
+  if (post.authorId && post.authorId !== actorId) {
+    recipients.add(post.authorId);
+  }
+
+  if (parentCommentId) {
+    const parentComment = findCommentById(post.commentItems ?? [], parentCommentId);
+    if (parentComment?.authorId && parentComment.authorId !== actorId) {
+      recipients.add(parentComment.authorId);
+    }
+  }
+
+  const mentionedHandles = extractMentions(content);
+  for (const handle of mentionedHandles) {
+    const user = store.users.find((candidate) => candidate.username.toLowerCase() === handle);
+    if (user && user.id !== actorId) {
+      recipients.add(user.id);
+    }
+  }
+
+  for (const recipientId of recipients) {
+    let type = "comment";
+    let message = `u/${actorName} comento en una publicacion que sigues`;
+
+    if (parentCommentId) {
+      type = "reply";
+      message = `u/${actorName} respondio a tu comentario`;
+    }
+
+    const mentionTarget = store.users.find((candidate) => candidate.id === recipientId);
+    if (mentionTarget && mentionedHandles.includes(mentionTarget.username.toLowerCase())) {
+      type = "mention";
+      message = `u/${actorName} te menciono en un comentario`;
+    }
+
+    queueNotification(store, {
+      userId: recipientId,
+      actorUserId: actorId,
+      type,
+      postId: post.id,
+      commentId: comment.id,
+      message
+    });
+  }
+}
+
+function mapNotificationForClient(notification, users) {
+  const actor = users.find((user) => user.id === notification.actorUserId);
+  return {
+    id: notification.id,
+    type: notification.type,
+    message: notification.message,
+    actorId: notification.actorUserId,
+    actorUsername: actor ? actor.username : "desconocido",
+    postId: notification.postId,
+    commentId: notification.commentId,
+    createdAt: notification.createdAt,
+    readAt: notification.readAt
+  };
+}
+
+function applyPostVote(post, voterUserId, direction) {
+  post.votesByUserId = normalizeVotesByUserId(post.votesByUserId);
+
+  const previous = post.votesByUserId[voterUserId] ?? 0;
+  const next = direction === "up" ? (previous === 1 ? 0 : 1) : previous === -1 ? 0 : -1;
+
+  if (next === 0) {
+    delete post.votesByUserId[voterUserId];
+  } else {
+    post.votesByUserId[voterUserId] = next;
+  }
+
+  const voteDelta = Object.values(post.votesByUserId).reduce((total, voteValue) => total + voteValue, 0);
+  post.score = 1 + voteDelta;
+
+  return next;
+}
+
+function toggleFavoritePost(user, postId) {
+  const existing = Array.isArray(user.favoritePostIds) ? user.favoritePostIds : [];
+  const current = new Set(existing);
+
+  if (current.has(postId)) {
+    current.delete(postId);
+  } else {
+    current.add(postId);
+  }
+
+  user.favoritePostIds = [...current];
+  return current.has(postId);
+}
+
+function sanitizeFavoritePostIds(value, validPostIds) {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  const unique = new Set();
+  for (const postId of value) {
+    if (typeof postId !== "string") {
+      continue;
+    }
+    if (!validPostIds.has(postId)) {
+      continue;
+    }
+    unique.add(postId);
+  }
+
+  return [...unique];
+}
+
+function recalculatePostScore(post) {
+  const votesByUserId = normalizeVotesByUserId(post.votesByUserId);
+  const voteDelta = Object.values(votesByUserId).reduce((total, voteValue) => total + voteValue, 0);
+  post.votesByUserId = votesByUserId;
+  post.score = 1 + voteDelta;
+  return post.score;
+}
+
+function recalculateAllReputations(store) {
+  let changed = false;
+
+  for (const user of store.users) {
+    const upvotes = store.posts.reduce((total, post) => {
+      const commentItems = Array.isArray(post.commentItems) ? post.commentItems : [];
+      const commentUpvotes = countCommentUpvotes(commentItems, user.id);
+      const postUpvotes = Object.entries(post.votesByUserId ?? {}).reduce((count, [voterId, voteValue]) => {
+        if (post.authorId !== user.id) {
+          return count;
+        }
+        return voteValue === 1 && voterId !== user.id ? count + 1 : count;
+      }, 0);
+      return total + commentUpvotes + postUpvotes;
+    }, 0);
+    const computedReputation = BASE_REPUTATION + upvotes;
+    if (user.reputation !== computedReputation) {
+      changed = true;
+    }
+    user.reputation = computedReputation;
+  }
+
+  return changed;
+}
+
+function syncFavoritesWithPosts(store) {
+  const validPostIds = new Set(store.posts.map((post) => post.id));
+  let changed = false;
+
+  for (const user of store.users) {
+    const sanitized = sanitizeFavoritePostIds(user.favoritePostIds, validPostIds);
+    const current = Array.isArray(user.favoritePostIds) ? user.favoritePostIds : [];
+    if (JSON.stringify(sanitized) !== JSON.stringify(current)) {
+      user.favoritePostIds = sanitized;
+      changed = true;
+    }
+  }
+
+  return changed;
+}
+
+function syncBlockedUsers(store) {
+  const validUserIds = new Set(store.users.map((user) => user.id));
+  let changed = false;
+
+  for (const user of store.users) {
+    const sanitized = sanitizeBlockedUserIds(user.blockedUserIds, validUserIds).filter((id) => id !== user.id);
+    const current = Array.isArray(user.blockedUserIds) ? user.blockedUserIds : [];
+    if (JSON.stringify(sanitized) !== JSON.stringify(current)) {
+      user.blockedUserIds = sanitized;
+      changed = true;
+    }
+  }
+
+  return changed;
+}
+
+function syncNotifications(store) {
+  const validUserIds = new Set(store.users.map((user) => user.id));
+  const validPostIds = new Set(store.posts.map((post) => post.id));
+  let changed = false;
+
+  if (!Array.isArray(store.notifications)) {
+    store.notifications = [];
+    return true;
+  }
+
+  const sanitized = store.notifications
+    .map((notification) => normalizeNotification(notification))
+    .filter((notification) => {
+      if (!validUserIds.has(notification.userId)) {
+        return false;
+      }
+      if (!validUserIds.has(notification.actorUserId)) {
+        return false;
+      }
+      if (notification.postId && !validPostIds.has(notification.postId)) {
+        return false;
+      }
+      return true;
+    });
+
+  if (JSON.stringify(sanitized) !== JSON.stringify(store.notifications)) {
+    changed = true;
+    store.notifications = sanitized;
+  }
+
+  return changed;
+}
+
+function syncReports(store) {
+  const validUserIds = new Set(store.users.map((user) => user.id));
+  const validPostIds = new Set(store.posts.map((post) => post.id));
+  let changed = false;
+
+  if (!Array.isArray(store.reports)) {
+    store.reports = [];
+    return true;
+  }
+
+  const sanitized = store.reports
+    .map((report) => normalizeReport(report))
+    .filter((report) => {
+      if (!validUserIds.has(report.reportedBy)) {
+        return false;
+      }
+      if (report.targetType === "post") {
+        return validPostIds.has(report.targetId);
+      }
+      if (report.targetType === "comment") {
+        return report.postId ? validPostIds.has(report.postId) : false;
+      }
+      return false;
+    });
+
+  if (JSON.stringify(sanitized) !== JSON.stringify(store.reports)) {
+    changed = true;
+    store.reports = sanitized;
+  }
+
+  return changed;
+}
+
+function recalculateAllPostScores(store) {
+  let changed = false;
+
+  for (const post of store.posts) {
+    const previousScore = Number.isFinite(post.score) ? Number(post.score) : 1;
+    const previousVotes = JSON.stringify(post.votesByUserId ?? {});
+    const nextScore = recalculatePostScore(post);
+    const nextVotes = JSON.stringify(post.votesByUserId ?? {});
+    if (previousScore !== nextScore || previousVotes !== nextVotes) {
+      changed = true;
+    }
+  }
+
+  return changed;
+}
+
+function recalculateStoreDerivedFields(store) {
+  const scoresChanged = recalculateAllPostScores(store);
+  const reputationsChanged = recalculateAllReputations(store);
+  const favoritesChanged = syncFavoritesWithPosts(store);
+  const blockedChanged = syncBlockedUsers(store);
+  const notificationsChanged = syncNotifications(store);
+  const reportsChanged = syncReports(store);
+  return scoresChanged || reputationsChanged || favoritesChanged || blockedChanged || notificationsChanged || reportsChanged;
+}
+
+function userFieldsEqual(left, right) {
+  return (
+    left.id === right.id &&
+    left.username === right.username &&
+    left.passwordHash === right.passwordHash &&
+    left.reputation === right.reputation &&
+    left.activityScore === right.activityScore &&
+    left.createdAt === right.createdAt &&
+    left.lastActiveAt === right.lastActiveAt &&
+    JSON.stringify(left.favoritePostIds ?? []) === JSON.stringify(right.favoritePostIds ?? []) &&
+    JSON.stringify(left.blockedUserIds ?? []) === JSON.stringify(right.blockedUserIds ?? [])
+  );
+}
+
+function postFieldsEqual(left, right, sourceCommentItems) {
+  return (
+    left.id === right.id &&
+    left.title === right.title &&
+    left.content === right.content &&
+    left.category === right.category &&
+    left.subforumId === right.subforumId &&
+    left.authorId === right.authorId &&
+    left.score === right.score &&
+    left.comments === right.comments &&
+    left.isPinned === right.isPinned &&
+    left.pinnedAt === right.pinnedAt &&
+    JSON.stringify(left.commentItems) === JSON.stringify(sourceCommentItems) &&
+    JSON.stringify(left.votesByUserId ?? {}) === JSON.stringify(right.votesByUserId ?? {}) &&
+    left.createdAt === right.createdAt &&
+    left.updatedAt === right.updatedAt
+  );
+}
+
+function recalculateUserReputationFromCommentUpvotes(store, userId) {
+  const user = store.users.find((candidate) => candidate.id === userId);
+  if (!user) {
+    return;
+  }
+
+  const upvotes = store.posts.reduce((total, post) => {
+    const commentItems = Array.isArray(post.commentItems) ? post.commentItems : [];
+    const commentUpvotes = countCommentUpvotes(commentItems, userId);
+    const postUpvotes = Object.entries(post.votesByUserId ?? {}).reduce((count, [voterId, voteValue]) => {
+      if (post.authorId !== userId) {
+        return count;
+      }
+      return voteValue === 1 && voterId !== userId ? count + 1 : count;
+    }, 0);
+    return total + commentUpvotes + postUpvotes;
+  }, 0);
+
+  user.reputation = BASE_REPUTATION + upvotes;
+}
+
+function normalizeUser(user, postsByAuthor, safePosts) {
+  const createdAt = isValidIsoDate(user.createdAt) ? user.createdAt : new Date().toISOString();
+  const lastActiveAt = isValidIsoDate(user.lastActiveAt) ? user.lastActiveAt : createdAt;
+  const postsCount = postsByAuthor.get(user.id) ?? 0;
+  const commentUpvotes = safePosts.reduce((total, post) => {
+    const commentItems = Array.isArray(post.commentItems) ? post.commentItems : [];
+    return total + countCommentUpvotes(commentItems, user.id);
+  }, 0);
+
+  return {
+    id: typeof user.id === "string" ? user.id : randomUUID(),
+    username: typeof user.username === "string" ? user.username.trim() : "",
+    passwordHash: typeof user.passwordHash === "string" ? user.passwordHash : "",
+    reputation: BASE_REPUTATION + commentUpvotes,
+    activityScore: Number.isFinite(user.activityScore) ? Number(user.activityScore) : postsCount * 2,
+    createdAt,
+    lastActiveAt,
+    favoritePostIds: Array.isArray(user.favoritePostIds) ? user.favoritePostIds.filter((postId) => typeof postId === "string") : [],
+    blockedUserIds: Array.isArray(user.blockedUserIds) ? user.blockedUserIds.filter((userId) => typeof userId === "string") : []
   };
 }
 
@@ -402,20 +926,6 @@ function findCommentById(commentItems, commentId) {
   return null;
 }
 
-function recalculateUserReputationFromCommentUpvotes(store, userId) {
-  const user = store.users.find((candidate) => candidate.id === userId);
-  if (!user) {
-    return;
-  }
-
-  const upvotes = store.posts.reduce((total, post) => {
-    const commentItems = Array.isArray(post.commentItems) ? post.commentItems : [];
-    return total + countCommentUpvotes(commentItems, userId);
-  }, 0);
-
-  user.reputation = upvotes;
-}
-
 function countCommentsDeep(commentItems) {
   return commentItems.reduce((total, comment) => {
     return total + 1 + countCommentsDeep(Array.isArray(comment.replies) ? comment.replies : []);
@@ -428,6 +938,19 @@ function sortCommentsByDate(commentItems) {
     .map((comment) => ({
       ...comment,
       replies: sortCommentsByDate(Array.isArray(comment.replies) ? comment.replies : [])
+    }));
+}
+
+function filterCommentTreeByBlockedAuthor(commentItems, blockedAuthorIds) {
+  if (!blockedAuthorIds || blockedAuthorIds.size === 0) {
+    return commentItems;
+  }
+
+  return commentItems
+    .filter((comment) => !blockedAuthorIds.has(comment.authorId))
+    .map((comment) => ({
+      ...comment,
+      replies: filterCommentTreeByBlockedAuthor(Array.isArray(comment.replies) ? comment.replies : [], blockedAuthorIds)
     }));
 }
 
@@ -499,9 +1022,15 @@ function buildNormalizedStore(input) {
   const sourceUsers = Array.isArray(source.users) ? source.users : [];
   const sourcePosts = Array.isArray(source.posts) ? source.posts : [];
   const sourceSubforums = Array.isArray(source.subforums) ? source.subforums : [];
+  const sourceNotifications = Array.isArray(source.notifications) ? source.notifications : [];
+  const sourceReports = Array.isArray(source.reports) ? source.reports : [];
 
   let changed =
-    !Array.isArray(source.users) || !Array.isArray(source.posts) || !Array.isArray(source.subforums);
+    !Array.isArray(source.users) ||
+    !Array.isArray(source.posts) ||
+    !Array.isArray(source.subforums) ||
+    !Array.isArray(source.notifications) ||
+    !Array.isArray(source.reports);
 
   const usedSubforumIds = new Set();
   const usedSubforumSlugs = new Set();
@@ -577,26 +1106,18 @@ function buildNormalizedStore(input) {
       category: ALLOWED_POST_CATEGORIES.includes(post.category) ? post.category : "discussion",
       subforumId,
       authorId: typeof post.authorId === "string" ? post.authorId : "",
-      score: Number.isFinite(post.score) ? Number(post.score) : 1,
+      score: 1,
       comments,
       commentItems,
+      votesByUserId: normalizeVotesByUserId(post.votesByUserId),
+      isPinned: Boolean(post.isPinned),
+      pinnedAt: isValidIsoDate(post.pinnedAt) ? post.pinnedAt : "",
       createdAt,
       updatedAt
     };
+    recalculatePostScore(normalized);
 
-    if (
-      normalized.id !== post.id ||
-      normalized.title !== post.title ||
-      normalized.content !== post.content ||
-      normalized.category !== post.category ||
-      normalized.subforumId !== post.subforumId ||
-      normalized.authorId !== post.authorId ||
-      normalized.score !== post.score ||
-      normalized.comments !== post.comments ||
-      JSON.stringify(normalized.commentItems) !== JSON.stringify(sourceCommentItems) ||
-      normalized.createdAt !== post.createdAt ||
-      normalized.updatedAt !== post.updatedAt
-    ) {
+    if (!postFieldsEqual(normalized, post, sourceCommentItems)) {
       changed = true;
     }
 
@@ -609,45 +1130,66 @@ function buildNormalizedStore(input) {
   }
 
   const safeUsers = sourceUsers.map((user) => {
-    const createdAt = isValidIsoDate(user.createdAt) ? user.createdAt : new Date().toISOString();
-    const lastActiveAt = isValidIsoDate(user.lastActiveAt) ? user.lastActiveAt : createdAt;
-    const postsCount = postsByAuthor.get(user.id) ?? 0;
-    const commentUpvotes = safePosts.reduce((total, post) => {
-      const commentItems = Array.isArray(post.commentItems) ? post.commentItems : [];
-      return total + countCommentUpvotes(commentItems, user.id);
-    }, 0);
-
-    const normalized = {
-      id: typeof user.id === "string" ? user.id : randomUUID(),
-      username: typeof user.username === "string" ? user.username.trim() : "",
-      passwordHash: typeof user.passwordHash === "string" ? user.passwordHash : "",
-      reputation: commentUpvotes,
-      activityScore: Number.isFinite(user.activityScore) ? Number(user.activityScore) : postsCount * 2,
-      createdAt,
-      lastActiveAt
-    };
-
-    if (
-      normalized.id !== user.id ||
-      normalized.username !== user.username ||
-      normalized.passwordHash !== user.passwordHash ||
-      normalized.reputation !== user.reputation ||
-      normalized.activityScore !== user.activityScore ||
-      normalized.createdAt !== user.createdAt ||
-      normalized.lastActiveAt !== user.lastActiveAt ||
-      Object.prototype.hasOwnProperty.call(user, "email")
-    ) {
+    const normalized = normalizeUser(user, postsByAuthor, safePosts);
+    if (!userFieldsEqual(normalized, user) || Object.prototype.hasOwnProperty.call(user, "email")) {
       changed = true;
     }
-
     return normalized;
   });
 
   const validUserIds = new Set(safeUsers.map((user) => user.id));
-  const filteredPosts = safePosts.filter((post) => validUserIds.has(post.authorId));
+  const filteredPosts = safePosts
+    .filter((post) => validUserIds.has(post.authorId))
+    .map((post) => {
+      const votesByUserId = Object.entries(post.votesByUserId ?? {}).reduce((acc, [voterId, voteValue]) => {
+        if (!validUserIds.has(voterId)) {
+          return acc;
+        }
+        if (voteValue === 1 || voteValue === -1) {
+          acc[voterId] = voteValue;
+        }
+        return acc;
+      }, {});
+      const next = {
+        ...post,
+        votesByUserId
+      };
+
+      if (next.isPinned && !next.pinnedAt) {
+        next.pinnedAt = next.updatedAt;
+        changed = true;
+      }
+      if (!next.isPinned && next.pinnedAt) {
+        next.pinnedAt = "";
+        changed = true;
+      }
+
+      recalculatePostScore(next);
+      if (JSON.stringify(post.votesByUserId ?? {}) !== JSON.stringify(votesByUserId)) {
+        changed = true;
+      }
+      return next;
+    });
   if (filteredPosts.length !== safePosts.length) {
     changed = true;
   }
+
+  const validPostIds = new Set(filteredPosts.map((post) => post.id));
+  const finalizedUsers = safeUsers.map((user) => {
+    const favoritePostIds = sanitizeFavoritePostIds(user.favoritePostIds, validPostIds);
+    const blockedUserIds = sanitizeBlockedUserIds(user.blockedUserIds, validUserIds).filter((id) => id !== user.id);
+    if (JSON.stringify(favoritePostIds) !== JSON.stringify(user.favoritePostIds ?? [])) {
+      changed = true;
+    }
+    if (JSON.stringify(blockedUserIds) !== JSON.stringify(user.blockedUserIds ?? [])) {
+      changed = true;
+    }
+    return {
+      ...user,
+      favoritePostIds,
+      blockedUserIds
+    };
+  });
 
   const finalizedSubforums = safeSubforums.map((subforum) => {
     const createdBy = validUserIds.has(subforum.createdBy) ? subforum.createdBy : "";
@@ -661,13 +1203,21 @@ function buildNormalizedStore(input) {
     };
   });
 
+  const normalizedStore = {
+    users: finalizedUsers,
+    posts: filteredPosts,
+    subforums: finalizedSubforums,
+    notifications: sourceNotifications.map((notification) => normalizeNotification(notification)),
+    reports: sourceReports.map((report) => normalizeReport(report))
+  };
+
+  if (recalculateStoreDerivedFields(normalizedStore)) {
+    changed = true;
+  }
+
   return {
     changed,
-    store: {
-      users: safeUsers,
-      posts: filteredPosts,
-      subforums: finalizedSubforums
-    }
+    store: normalizedStore
   };
 }
 
@@ -762,7 +1312,7 @@ function authMiddleware(req, res, next) {
   }
 }
 
-function mapPostForClient(post, users, subforums) {
+function mapPostForClient(post, users, subforums, viewerUserId = "") {
   const author = users.find((user) => user.id === post.authorId);
   const subforum =
     subforums.find((candidate) => candidate.id === post.subforumId) ??
@@ -788,6 +1338,10 @@ function mapPostForClient(post, users, subforums) {
     authorReputation: author ? author.reputation : 0,
     comments: commentCount,
     score: post.score,
+    userVote: viewerUserId ? post.votesByUserId?.[viewerUserId] ?? 0 : 0,
+    isPinned: Boolean(post.isPinned),
+    pinnedAt: typeof post.pinnedAt === "string" ? post.pinnedAt : "",
+    canPin: isSubforumModerator(subforum, viewerUserId),
     createdAt: post.createdAt,
     updatedAt: post.updatedAt
   };
@@ -819,8 +1373,10 @@ app.post(
       id: randomUUID(),
       username,
       passwordHash,
-      reputation: 10,
+      reputation: BASE_REPUTATION,
       activityScore: 1,
+      favoritePostIds: [],
+      blockedUserIds: [],
       createdAt: now,
       lastActiveAt: now
     };
@@ -830,7 +1386,7 @@ app.post(
 
     const token = createToken(user.id);
     setAuthCookie(res, token);
-    return res.status(201).json({ user: userPublicFields(user) });
+    return res.status(201).json({ user: userPublicFields(user, { includePrivate: true }) });
   })
 );
 
@@ -859,7 +1415,7 @@ app.post(
 
     const token = createToken(user.id);
     setAuthCookie(res, token);
-    return res.json({ user: userPublicFields(user) });
+    return res.json({ user: userPublicFields(user, { includePrivate: true }) });
   })
 );
 
@@ -879,7 +1435,83 @@ app.get(
       throw new HttpError(404, "User not found");
     }
 
-    return res.json({ user: userPublicFields(user) });
+    return res.json({ user: userPublicFields(user, { includePrivate: true }) });
+  })
+);
+
+app.get(
+  "/api/notifications",
+  authMiddleware,
+  asyncHandler(async (req, res) => {
+    const store = await readStore();
+    const user = store.users.find((candidate) => candidate.id === req.userId);
+    if (!user) {
+      throw new HttpError(404, "User not found");
+    }
+
+    const blockedUserIds = new Set(Array.isArray(user.blockedUserIds) ? user.blockedUserIds : []);
+    const notifications = (Array.isArray(store.notifications) ? store.notifications : [])
+      .filter((notification) => notification.userId === user.id)
+      .filter((notification) => !blockedUserIds.has(notification.actorUserId))
+      .sort((a, b) => {
+        const unreadDiff = Number(Boolean(a.readAt)) - Number(Boolean(b.readAt));
+        if (unreadDiff !== 0) {
+          return unreadDiff;
+        }
+        return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
+      })
+      .map((notification) => mapNotificationForClient(notification, store.users));
+
+    const unreadCount = notifications.filter((notification) => !notification.readAt).length;
+    return res.json({ notifications, unreadCount });
+  })
+);
+
+app.post(
+  "/api/notifications/read-all",
+  writeRateLimit,
+  authMiddleware,
+  asyncHandler(async (req, res) => {
+    const store = await readStore();
+    const now = new Date().toISOString();
+
+    let updated = false;
+    for (const notification of Array.isArray(store.notifications) ? store.notifications : []) {
+      if (notification.userId === req.userId && !notification.readAt) {
+        notification.readAt = now;
+        updated = true;
+      }
+    }
+
+    if (updated) {
+      await writeStore(store);
+    }
+
+    return res.status(204).send();
+  })
+);
+
+app.post(
+  "/api/notifications/:id/read",
+  writeRateLimit,
+  authMiddleware,
+  asyncHandler(async (req, res) => {
+    const notificationId = readTrimmedString(req.params.id, "id");
+    const store = await readStore();
+    const notification = (Array.isArray(store.notifications) ? store.notifications : []).find(
+      (candidate) => candidate.id === notificationId && candidate.userId === req.userId
+    );
+
+    if (!notification) {
+      throw new HttpError(404, "Notification not found");
+    }
+
+    if (!notification.readAt) {
+      notification.readAt = new Date().toISOString();
+      await writeStore(store);
+    }
+
+    return res.status(204).send();
   })
 );
 
@@ -893,6 +1525,46 @@ app.get(
       .map((user) => userPublicFields(user));
 
     return res.json({ users });
+  })
+);
+
+app.post(
+  "/api/users/:id/block",
+  writeRateLimit,
+  authMiddleware,
+  asyncHandler(async (req, res) => {
+    const targetUserId = readTrimmedString(req.params.id, "id");
+    const store = await readStore();
+    const currentUser = store.users.find((candidate) => candidate.id === req.userId);
+    if (!currentUser) {
+      throw new HttpError(404, "User not found");
+    }
+
+    if (targetUserId === currentUser.id) {
+      throw new HttpError(400, "You cannot block yourself");
+    }
+
+    const targetUser = store.users.find((candidate) => candidate.id === targetUserId);
+    if (!targetUser) {
+      throw new HttpError(404, "Target user not found");
+    }
+
+    const current = new Set(Array.isArray(currentUser.blockedUserIds) ? currentUser.blockedUserIds : []);
+    if (current.has(targetUserId)) {
+      current.delete(targetUserId);
+    } else {
+      current.add(targetUserId);
+    }
+
+    currentUser.blockedUserIds = [...current];
+    currentUser.lastActiveAt = new Date().toISOString();
+    await writeStore(store);
+
+    return res.json({
+      blocked: current.has(targetUserId),
+      blockedUserIds: currentUser.blockedUserIds,
+      user: userPublicFields(currentUser, { includePrivate: true })
+    });
   })
 );
 
@@ -950,6 +1622,8 @@ app.get(
   "/api/posts",
   asyncHandler(async (req, res) => {
     const store = await readStore();
+    const viewerUserId = parseViewerUserId(req);
+    const blockedAuthorIds = getBlockedUserIdSet(store, viewerUserId);
     const subforumId = typeof req.query.subforumId === "string" ? req.query.subforumId : "";
 
     if (subforumId && !store.subforums.some((subforum) => subforum.id === subforumId)) {
@@ -961,8 +1635,22 @@ app.get(
       : store.posts.slice();
 
     const posts = sourcePosts
-      .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
-      .map((post) => mapPostForClient(post, store.users, store.subforums));
+      .filter((post) => !blockedAuthorIds.has(post.authorId))
+      .sort((a, b) => {
+        const pinnedDiff = Number(Boolean(b.isPinned)) - Number(Boolean(a.isPinned));
+        if (pinnedDiff !== 0) {
+          return pinnedDiff;
+        }
+
+        const pinnedDateDiff =
+          new Date(b.pinnedAt || 0).getTime() - new Date(a.pinnedAt || 0).getTime();
+        if (pinnedDateDiff !== 0) {
+          return pinnedDateDiff;
+        }
+
+        return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
+      })
+      .map((post) => mapPostForClient(post, store.users, store.subforums, viewerUserId));
 
     return res.json({ posts });
   })
@@ -1000,6 +1688,9 @@ app.post(
       subforumId: subforum.id,
       authorId: user.id,
       score: 1,
+      votesByUserId: {},
+      isPinned: false,
+      pinnedAt: "",
       comments: 0,
       commentItems: [],
       createdAt: now,
@@ -1011,8 +1702,8 @@ app.post(
     await writeStore(store);
 
     return res.status(201).json({
-      post: mapPostForClient(post, store.users, store.subforums),
-      user: userPublicFields(user)
+      post: mapPostForClient(post, store.users, store.subforums, req.userId),
+      user: userPublicFields(user, { includePrivate: true })
     });
   })
 );
@@ -1029,18 +1720,11 @@ app.get(
     }
 
     const commentItems = Array.isArray(post.commentItems) ? post.commentItems : [];
-    let viewerUserId = "";
-    const maybeToken = extractAuthToken(req);
-    if (maybeToken) {
-      try {
-        const payload = jwt.verify(maybeToken, JWT_SECRET);
-        viewerUserId = typeof payload?.userId === "string" ? payload.userId : "";
-      } catch {
-        viewerUserId = "";
-      }
-    }
+    const viewerUserId = parseViewerUserId(req);
+    const blockedAuthorIds = getBlockedUserIdSet(store, viewerUserId);
+    const visibleCommentItems = filterCommentTreeByBlockedAuthor(commentItems, blockedAuthorIds);
 
-    const comments = sortCommentsByDate(commentItems).map((comment) =>
+    const comments = sortCommentsByDate(visibleCommentItems).map((comment) =>
       mapCommentForClient(comment, store.users, viewerUserId)
     );
 
@@ -1097,12 +1781,174 @@ app.post(
     post.updatedAt = new Date().toISOString();
 
     applyCommentContribution(user);
+    createCommentNotifications(store, {
+      actor: user,
+      post,
+      comment,
+      parentCommentId,
+      content
+    });
     await writeStore(store);
 
     return res.status(201).json({
       comment: mapCommentForClient(comment, store.users, req.userId),
       comments: post.comments,
-      user: userPublicFields(user)
+      user: userPublicFields(user, { includePrivate: true })
+    });
+  })
+);
+
+app.post(
+  "/api/posts/:id/vote",
+  writeRateLimit,
+  authMiddleware,
+  asyncHandler(async (req, res) => {
+    const postId = readTrimmedString(req.params.id, "id");
+    const body = requirePlainObject(req.body);
+    const direction = validateVoteDirection(body.direction);
+
+    const store = await readStore();
+    const post = store.posts.find((candidate) => candidate.id === postId);
+    if (!post) {
+      throw new HttpError(404, "Post not found");
+    }
+
+    const voter = store.users.find((candidate) => candidate.id === req.userId);
+    if (!voter) {
+      throw new HttpError(404, "User not found");
+    }
+
+    applyPostVote(post, req.userId, direction);
+    post.updatedAt = new Date().toISOString();
+
+    if (post.authorId) {
+      recalculateUserReputationFromCommentUpvotes(store, post.authorId);
+    }
+
+    voter.lastActiveAt = new Date().toISOString();
+    await writeStore(store);
+
+    return res.json({
+      post: mapPostForClient(post, store.users, store.subforums, req.userId),
+      user: userPublicFields(voter, { includePrivate: true })
+    });
+  })
+);
+
+app.post(
+  "/api/posts/:id/favorite",
+  writeRateLimit,
+  authMiddleware,
+  asyncHandler(async (req, res) => {
+    const postId = readTrimmedString(req.params.id, "id");
+    const store = await readStore();
+    const post = store.posts.find((candidate) => candidate.id === postId);
+    if (!post) {
+      throw new HttpError(404, "Post not found");
+    }
+
+    const user = store.users.find((candidate) => candidate.id === req.userId);
+    if (!user) {
+      throw new HttpError(404, "User not found");
+    }
+
+    const favorited = toggleFavoritePost(user, postId);
+    user.lastActiveAt = new Date().toISOString();
+    await writeStore(store);
+
+    return res.json({
+      favorited,
+      favoritePostIds: user.favoritePostIds,
+      user: userPublicFields(user, { includePrivate: true })
+    });
+  })
+);
+
+app.post(
+  "/api/posts/:id/report",
+  writeRateLimit,
+  authMiddleware,
+  asyncHandler(async (req, res) => {
+    const postId = readTrimmedString(req.params.id, "id");
+    const body = requirePlainObject(req.body);
+    const reason = validateReportReason(body.reason);
+    const store = await readStore();
+
+    const post = store.posts.find((candidate) => candidate.id === postId);
+    if (!post) {
+      throw new HttpError(404, "Post not found");
+    }
+
+    const reporter = store.users.find((candidate) => candidate.id === req.userId);
+    if (!reporter) {
+      throw new HttpError(404, "User not found");
+    }
+
+    const alreadyReported = (Array.isArray(store.reports) ? store.reports : []).some(
+      (report) =>
+        report.targetType === "post" &&
+        report.targetId === postId &&
+        report.reportedBy === reporter.id &&
+        report.status === "open"
+    );
+
+    if (alreadyReported) {
+      throw new HttpError(409, "You already reported this post");
+    }
+
+    if (!Array.isArray(store.reports)) {
+      store.reports = [];
+    }
+
+    const report = {
+      id: randomUUID(),
+      targetType: "post",
+      targetId: post.id,
+      postId: post.id,
+      reportedBy: reporter.id,
+      reason,
+      status: "open",
+      createdAt: new Date().toISOString()
+    };
+
+    store.reports.push(report);
+    await writeStore(store);
+
+    return res.status(201).json({ report });
+  })
+);
+
+app.post(
+  "/api/posts/:id/pin",
+  writeRateLimit,
+  authMiddleware,
+  asyncHandler(async (req, res) => {
+    const postId = readTrimmedString(req.params.id, "id");
+    const body = requirePlainObject(req.body);
+    const pinned = validatePinnedFlag(body.pinned);
+    const store = await readStore();
+
+    const post = store.posts.find((candidate) => candidate.id === postId);
+    if (!post) {
+      throw new HttpError(404, "Post not found");
+    }
+
+    const subforum = store.subforums.find((candidate) => candidate.id === post.subforumId);
+    if (!subforum) {
+      throw new HttpError(404, "Subforum not found");
+    }
+
+    if (!isSubforumModerator(subforum, req.userId)) {
+      throw new HttpError(403, "Only subforum moderators can pin posts");
+    }
+
+    post.isPinned = pinned;
+    post.pinnedAt = pinned ? new Date().toISOString() : "";
+    post.updatedAt = new Date().toISOString();
+    await writeStore(store);
+
+    return res.json({
+      post: mapPostForClient(post, store.users, store.subforums, req.userId)
     });
   })
 );
@@ -1150,7 +1996,7 @@ app.post(
     return res.json({
       comment: mapCommentForClient(comment, store.users, req.userId),
       author: commentAuthor ? userPublicFields(commentAuthor) : null,
-      user: voter ? userPublicFields(voter) : null
+      user: voter ? userPublicFields(voter, { includePrivate: true }) : null
     });
   })
 );
@@ -1173,6 +2019,7 @@ app.delete(
     }
 
     store.posts = store.posts.filter((candidate) => candidate.id !== postId);
+    recalculateStoreDerivedFields(store);
     await writeStore(store);
 
     return res.status(204).send();

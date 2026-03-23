@@ -174,6 +174,25 @@ button {
   justify-self: end;
 }
 
+.notif-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.notif-badge {
+  min-width: 18px;
+  height: 18px;
+  border-radius: 999px;
+  display: grid;
+  place-items: center;
+  font-size: 0.72rem;
+  font-weight: 700;
+  color: #fff;
+  background: #d93053;
+  padding: 0 5px;
+}
+
 .username-chip {
   font-size: 0.8rem;
   color: var(--text-muted);
@@ -469,6 +488,15 @@ button {
   font-weight: 700;
 }
 
+.pin-badge {
+  border-radius: 999px;
+  padding: 2px 8px;
+  font-size: 0.7rem;
+  font-weight: 700;
+  color: #005a8a;
+  background: #dff3ff;
+}
+
 .tag.discussion {
   color: #046d45;
   background: #e5f6ed;
@@ -535,6 +563,15 @@ button {
 
 .thread-actions .liked-btn {
   color: #d93053;
+}
+
+.thread-actions .danger-btn {
+  color: #c72828;
+}
+
+.thread-actions .danger-btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
 }
 
 .thread-actions svg {
@@ -983,6 +1020,54 @@ button {
   font-size: 0.9rem;
 }
 
+.danger-state {
+  border-color: rgba(177, 0, 0, 0.4);
+  color: #b10000;
+}
+
+.leaderboard-list {
+  display: grid;
+  gap: 6px;
+  padding: 8px 0;
+}
+
+.leaderboard-row {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  background: var(--bg-muted);
+  border-radius: 4px;
+}
+
+.leaderboard-rank {
+  font-size: 0.86rem;
+  font-weight: 700;
+  color: var(--text-muted);
+}
+
+.leaderboard-main {
+  display: grid;
+  gap: 2px;
+}
+
+.leaderboard-main strong {
+  font-size: 0.92rem;
+}
+
+.leaderboard-main span {
+  font-size: 0.78rem;
+  color: var(--text-muted);
+}
+
+.leaderboard-rep {
+  font-size: 0.84rem;
+  font-weight: 700;
+  color: var(--link);
+}
+
 .sidebar {
   display: grid;
   gap: 10px;
@@ -1132,6 +1217,61 @@ button {
   padding: 14px;
   display: grid;
   gap: 10px;
+}
+
+.notifications-modal {
+  width: min(720px, 96vw);
+}
+
+.notifications-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.notifications-head-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.notifications-list {
+  display: grid;
+  gap: 8px;
+  max-height: 420px;
+  overflow: auto;
+}
+
+.notification-item {
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg-muted);
+  padding: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.notification-item.unread {
+  border-color: color-mix(in srgb, var(--link) 35%, var(--border) 65%);
+}
+
+.notification-main {
+  min-width: 0;
+}
+
+.notification-message {
+  font-size: 0.88rem;
+  color: var(--text-main);
+}
+
+.notification-meta {
+  margin-top: 3px;
+  font-size: 0.76rem;
+  color: var(--text-muted);
+  display: flex;
+  gap: 6px;
 }
 
 .modal h2 {
